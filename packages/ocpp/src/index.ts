@@ -4,6 +4,7 @@ export {
   OcppProtocolError,
   OcppResponseError,
   OcppTimeoutError,
+  OcppConnectionClosedError,
 } from "./errors.js";
 export {
   CALL,

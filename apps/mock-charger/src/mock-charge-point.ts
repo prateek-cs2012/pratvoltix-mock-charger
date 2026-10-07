@@ -10,6 +10,32 @@ import {
 import type { FaultEffect } from "@pratvoltix/simulator-control";
 import type { FaultEngine } from "./fault-engine.js";
 
+export type ConnectorStatus = "Available" | "Preparing" | "Charging" | "SuspendedEVSE" | "SuspendedEV" | "Finishing" | "Reserved" | "Unavailable" | "Faulted";
+
+export interface ChargePointState {
+  transactionId: number | null;
+  connectorStatus: ConnectorStatus;
+  meterWh: number;
+  idTag: string | null;
+}
+
+export interface OfflineTransaction {
+  localId: number;
+  connectorId: number;
+  idTag: string;
+  meterStart: number;
+  meterStop: number;
+  startTimestamp: string;
+  stopTimestamp: string;
+  reason: string;
+}
+
+export interface LocalAuthEntry {
+  idTag: string;
+  status: "Accepted" | "Blocked" | "Expired" | "Invalid" | "ConcurrentTx";
+  expiryDate?: string;
+}
+
 export interface MockChargePointOptions {
   identity: string;
   vendor?: string;
@@ -17,6 +43,7 @@ export interface MockChargePointOptions {
   serialNumber?: string;
   firmwareVersion?: string;
   connectorId?: number;
+  initialState?: ChargePointState;
 }
 
 interface ConfigurationKey {
@@ -27,14 +54,28 @@ interface ConfigurationKey {
 
 export interface MockChargePointHooks {
   disconnectOcpp?: () => void;
+  sendRawOcpp?: (data: string) => void;
 }
 
 export class MockChargePoint {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  private meterWh = 1_000;
-  private transactionId: number | null = null;
+  private meterWh: number;
+  private transactionId: number | null;
+  private connectorStatus: ConnectorStatus;
+  private idTag: string | null;
   private heartbeatInterval = 60;
   private readonly connectorId: number;
+
+  private lastStartTxKey: string | null = null;
+  private lastStartTxResponse: { transactionId: number } | null = null;
+  private lastStopTxId: number | null = null;
+  private lastStopTxResponse: Record<string, unknown> | null = null;
+
+  private localAuthList: LocalAuthEntry[] = [];
+  private localAuthListVersion = 0;
+  private offlineQueue: OfflineTransaction[] = [];
+  private authorizationCache = new Map<string, LocalAuthEntry>();
+  private outboundDelayMs = 0;
 
   constructor(
     private readonly connection: OcppConnection,
@@ -43,7 +84,97 @@ export class MockChargePoint {
     private readonly hooks: MockChargePointHooks = {},
   ) {
     this.connectorId = options.connectorId ?? 1;
+    const initialState = options.initialState;
+    this.transactionId = initialState?.transactionId ?? null;
+    this.connectorStatus = initialState?.connectorStatus ?? "Available";
+    this.meterWh = initialState?.meterWh ?? 1_000;
+    this.idTag = initialState?.idTag ?? null;
     this.connection.onCall((call) => this.handleCall(call));
+  }
+
+  setOutboundDelay(delayMs: number): void {
+    this.outboundDelayMs = delayMs;
+  }
+
+  getOutboundDelay(): number {
+    return this.outboundDelayMs;
+  }
+
+  setLocalAuthList(entries: LocalAuthEntry[]): void {
+    this.localAuthList = [...entries];
+    this.authorizationCache.clear();
+    for (const entry of entries) {
+      this.authorizationCache.set(entry.idTag, entry);
+    }
+  }
+
+  getLocalAuthList(): LocalAuthEntry[] {
+    return [...this.localAuthList];
+  }
+
+  getLocalListVersion(): number {
+    return this.localAuthListVersion;
+  }
+
+  getOfflineQueue(): OfflineTransaction[] {
+    return [...this.offlineQueue];
+  }
+
+  clearOfflineQueue(): void {
+    this.offlineQueue = [];
+  }
+
+  getState(): ChargePointState {
+    return {
+      transactionId: this.transactionId,
+      connectorStatus: this.connectorStatus,
+      meterWh: this.meterWh,
+      idTag: this.idTag,
+    };
+  }
+
+  hasActiveTransaction(): boolean {
+    return this.transactionId !== null;
+  }
+
+  /** Lab helper: run the same Start path as RemoteStart follow-on (for idempotency tests). */
+  async beginTransactionForLab(idTag: string, connectorId?: number): Promise<void> {
+    await this.beginTransaction(idTag, connectorId ?? this.connectorId);
+  }
+
+  /** Lab helper: run the Stop path (for idempotency tests). */
+  async finishTransactionForLab(): Promise<void> {
+    await this.finishTransaction();
+  }
+
+  /**
+   * Lab helper: restore active transaction fields without clearing Start/Stop caches.
+   * Used to re-enter finishTransaction after a successful Stop cleared transactionId.
+   */
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: ConnectorStatus;
+  }): void {
+    this.transactionId = state.transactionId;
+    this.idTag = state.idTag;
+    this.connectorStatus = state.connectorStatus ?? "Charging";
+  }
+
+  /** Lab cleanup: drop any active tx and mark Available without CSMS round-trips. */
+  resetToIdle(): void {
+    this.transactionId = null;
+    this.idTag = null;
+    this.connectorStatus = "Available";
+    this.lastStopTxId = null;
+    this.lastStopTxResponse = null;
+    this.setOutboundDelay(0);
+  }
+
+  /** Best-effort StatusNotification Available for CSMS/lab peer visibility. */
+  async notifyAvailable(): Promise<void> {
+    this.connectorStatus = "Available";
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
   }
 
   async announce(): Promise<void> {
@@ -59,7 +190,7 @@ export class MockChargePoint {
     }
     this.scheduleHeartbeat();
 
-    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload(this.transactionId ? "Charging" : "Available"));
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload(this.connectorStatus));
   }
 
   async emit(action: string): Promise<void> {
@@ -96,6 +227,13 @@ export class MockChargePoint {
         console.error("OCPP disconnect fault failed", error);
       }
       return new Promise(() => undefined);
+    } else if (effect?.type === "malformed-response") {
+      try {
+        this.hooks.sendRawOcpp?.(effect.rawPayload);
+      } catch (error) {
+        console.error("Malformed response injection failed", error);
+      }
+      return new Promise(() => undefined);
     }
 
     switch (call.action) {
@@ -114,9 +252,14 @@ export class MockChargePoint {
       case Ocpp16Action.UnlockConnector:
         return { status: "Unlocked" };
       case Ocpp16Action.ClearCache:
+        this.authorizationCache.clear();
         return { status: "Accepted" };
       case Ocpp16Action.DataTransfer:
         return { status: "Rejected" };
+      case Ocpp16Action.SendLocalList:
+        return this.handleSendLocalList(call);
+      case Ocpp16Action.GetLocalListVersion:
+        return { listVersion: this.localAuthListVersion };
       default:
         throw new OcppResponseError(Ocpp16ErrorCode.NotSupported, `Unsupported action ${call.action}`);
     }
@@ -159,7 +302,7 @@ export class MockChargePoint {
     if (requested === Ocpp16Action.StatusNotification) {
       await this.connection.call(
         Ocpp16Action.StatusNotification,
-        this.statusPayload(this.transactionId ? "Charging" : "Available"),
+        this.statusPayload(this.connectorStatus),
       );
       return;
     }
@@ -188,21 +331,57 @@ export class MockChargePoint {
   }
 
   private async beginTransaction(idTag: string, connectorId: number): Promise<void> {
-    const authorize = await this.connection.call<{ idTagInfo?: { status?: string } }>(Ocpp16Action.Authorize, { idTag });
-    if (authorize.idTagInfo?.status !== "Accepted") {
+    if (this.outboundDelayMs > 0) {
+      await delay(this.outboundDelayMs);
+    }
+
+    let authStatus: string | undefined;
+    const cachedAuth = this.authorizationCache.get(idTag);
+    if (cachedAuth) {
+      authStatus = cachedAuth.status;
+    } else {
+      const authorize = await this.connection.call<{ idTagInfo?: { status?: string } }>(Ocpp16Action.Authorize, { idTag });
+      authStatus = authorize.idTagInfo?.status;
+      if (authStatus === "Accepted") {
+        this.authorizationCache.set(idTag, { idTag, status: "Accepted" });
+      }
+    }
+
+    if (authStatus !== "Accepted") {
+      return;
+    }
+
+    if (this.outboundDelayMs > 0) {
+      await delay(this.outboundDelayMs);
+    }
+
+    const meterStart = this.meterWh;
+    const timestamp = new Date().toISOString();
+    const startKey = `${connectorId}:${idTag}:${meterStart}`;
+
+    if (this.lastStartTxKey === startKey && this.lastStartTxResponse) {
+      this.transactionId = this.lastStartTxResponse.transactionId;
+      this.idTag = idTag;
+      this.connectorStatus = "Charging";
       return;
     }
 
     const started = await this.connection.call<{ transactionId?: number }>(Ocpp16Action.StartTransaction, {
       connectorId,
       idTag,
-      meterStart: this.meterWh,
-      timestamp: new Date().toISOString(),
+      meterStart,
+      timestamp,
     });
     if (typeof started.transactionId !== "number") {
       throw new Error("StartTransaction.conf did not include transactionId");
     }
+
+    this.lastStartTxKey = startKey;
+    this.lastStartTxResponse = { transactionId: started.transactionId };
+
     this.transactionId = started.transactionId;
+    this.idTag = idTag;
+    this.connectorStatus = "Charging";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Charging"));
     await this.connection.call(Ocpp16Action.MeterValues, {
       connectorId,
@@ -226,15 +405,68 @@ export class MockChargePoint {
 
   private async finishTransaction(): Promise<void> {
     const transactionId = this.transactionId;
+    if (transactionId === null) {
+      return;
+    }
+
+    if (this.lastStopTxId === transactionId && this.lastStopTxResponse) {
+      this.transactionId = null;
+      this.idTag = null;
+      this.connectorStatus = "Available";
+      return;
+    }
+
     this.meterWh += 250;
-    await this.connection.call(Ocpp16Action.StopTransaction, {
+    const meterStop = this.meterWh;
+    const timestamp = new Date().toISOString();
+
+    const response = await this.connection.call<Record<string, unknown>>(Ocpp16Action.StopTransaction, {
       transactionId,
-      meterStop: this.meterWh,
-      timestamp: new Date().toISOString(),
+      meterStop,
+      timestamp,
       reason: "Remote",
     });
+
+    this.lastStopTxId = transactionId;
+    this.lastStopTxResponse = response;
+
     this.transactionId = null;
+    this.idTag = null;
+    this.connectorStatus = "Available";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
+  }
+
+  async uploadOfflineTransactions(): Promise<number> {
+    const queue = [...this.offlineQueue];
+    let uploaded = 0;
+    for (const tx of queue) {
+      try {
+        const started = await this.connection.call<{ transactionId?: number }>(Ocpp16Action.StartTransaction, {
+          connectorId: tx.connectorId,
+          idTag: tx.idTag,
+          meterStart: tx.meterStart,
+          timestamp: tx.startTimestamp,
+        });
+        if (typeof started.transactionId !== "number") {
+          break;
+        }
+        await this.connection.call(Ocpp16Action.StopTransaction, {
+          transactionId: started.transactionId,
+          meterStop: tx.meterStop,
+          timestamp: tx.stopTimestamp,
+          reason: tx.reason,
+        });
+        uploaded += 1;
+        this.offlineQueue = this.offlineQueue.filter((t) => t.localId !== tx.localId);
+      } catch {
+        break;
+      }
+    }
+    return uploaded;
+  }
+
+  queueOfflineTransaction(tx: OfflineTransaction): void {
+    this.offlineQueue.push(tx);
   }
 
   private reset(call: InboundCall): Record<string, unknown> {
@@ -246,6 +478,45 @@ export class MockChargePoint {
       this.close();
       this.connection.close();
     }, 25);
+    return { status: "Accepted" };
+  }
+
+  private handleSendLocalList(call: InboundCall): Record<string, unknown> {
+    const updateType = readString(call.payload, "updateType");
+    const listVersion = readNumber(call.payload, "listVersion");
+    const localAuthorizationList = call.payload["localAuthorizationList"];
+
+    if (!updateType || listVersion === undefined) {
+      return { status: "Failed" };
+    }
+
+    if (updateType === "Full") {
+      this.localAuthList = [];
+      this.authorizationCache.clear();
+    }
+
+    if (Array.isArray(localAuthorizationList)) {
+      for (const entry of localAuthorizationList) {
+        if (typeof entry === "object" && entry !== null) {
+          const idTag = readString(entry, "idTag");
+          const idTagInfo = entry["idTagInfo"] as { status?: string; expiryDate?: string } | undefined;
+          if (idTag && idTagInfo?.status) {
+            const authEntry: LocalAuthEntry = {
+              idTag,
+              status: idTagInfo.status as LocalAuthEntry["status"],
+              ...(idTagInfo.expiryDate ? { expiryDate: idTagInfo.expiryDate } : {}),
+            };
+            if (updateType === "Differential") {
+              this.localAuthList = this.localAuthList.filter((e) => e.idTag !== idTag);
+            }
+            this.localAuthList.push(authEntry);
+            this.authorizationCache.set(idTag, authEntry);
+          }
+        }
+      }
+    }
+
+    this.localAuthListVersion = listVersion;
     return { status: "Accepted" };
   }
 

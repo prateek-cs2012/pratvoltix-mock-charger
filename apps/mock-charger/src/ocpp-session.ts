@@ -1,8 +1,8 @@
 import { OcppConnection, transportFromWebSocket } from "@pratvoltix/ocpp";
-import { ControlProtocolError, sanitizeCsmsUrl } from "@pratvoltix/simulator-control";
+import { ControlProtocolError, sanitizeCsmsUrl, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
-import { MockChargePoint } from "./mock-charge-point.js";
+import { MockChargePoint, type ChargePointState, type ConnectorStatus, type LocalAuthEntry, type OfflineTransaction } from "./mock-charge-point.js";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 
@@ -37,8 +37,101 @@ export class OcppSession {
   private suppressReconnect = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private persistedState: ChargePointState | undefined;
+  private reconnectStorm: ReconnectStormConfig | undefined;
+  private stormBurstRemaining = 0;
 
   constructor(private readonly options: OcppSessionOptions) {}
+
+  setReconnectStorm(config: ReconnectStormConfig | undefined): void {
+    this.reconnectStorm = config;
+    if (config) {
+      this.stormBurstRemaining = config.burstCount;
+    } else {
+      this.stormBurstRemaining = 0;
+      this.clearReconnect();
+    }
+  }
+
+  getReconnectStorm(): ReconnectStormConfig | undefined {
+    return this.reconnectStorm;
+  }
+
+  getPersistedState(): ChargePointState | undefined {
+    return this.persistedState;
+  }
+
+  setOutboundDelay(delayMs: number): void {
+    this.chargePoint?.setOutboundDelay(delayMs);
+  }
+
+  getOutboundDelay(): number {
+    return this.chargePoint?.getOutboundDelay() ?? 0;
+  }
+
+  setLocalAuthList(entries: LocalAuthEntry[]): void {
+    this.chargePoint?.setLocalAuthList(entries);
+  }
+
+  getLocalAuthList(): LocalAuthEntry[] {
+    return this.chargePoint?.getLocalAuthList() ?? [];
+  }
+
+  /** Clear active tx + force Available (and persist) so the next catalog case starts clean. */
+  async resetToIdle(): Promise<void> {
+    this.chargePoint?.resetToIdle();
+    if (this.chargePoint) {
+      this.persistedState = this.chargePoint.getState();
+      try {
+        await this.chargePoint.notifyAvailable();
+      } catch {
+        // Socket may be down; persisted Available is enough for the next announce.
+      }
+    } else if (this.persistedState) {
+      this.persistedState = {
+        ...this.persistedState,
+        transactionId: null,
+        idTag: null,
+        connectorStatus: "Available",
+      };
+    }
+  }
+
+  async uploadOfflineTransactions(): Promise<number> {
+    return this.chargePoint?.uploadOfflineTransactions() ?? 0;
+  }
+
+  queueOfflineTransaction(tx: OfflineTransaction): void {
+    this.chargePoint?.queueOfflineTransaction(tx);
+  }
+
+  async retryStartTransaction(idTag: string, connectorId?: number): Promise<void> {
+    if (!this.chargePoint) {
+      throw new Error("Charge point is not connected");
+    }
+    await this.chargePoint.beginTransactionForLab(idTag, connectorId);
+  }
+
+  async retryStopTransaction(): Promise<void> {
+    if (!this.chargePoint) {
+      throw new Error("Charge point is not connected");
+    }
+    await this.chargePoint.finishTransactionForLab();
+  }
+
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }): void {
+    this.chargePoint?.restoreTransactionState({
+      transactionId: state.transactionId,
+      idTag: state.idTag,
+      ...(state.connectorStatus
+        ? { connectorStatus: state.connectorStatus as ConnectorStatus }
+        : {}),
+    });
+  }
 
   start(): void {
     void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
@@ -63,6 +156,7 @@ export class OcppSession {
   async connect(url: string): Promise<{ state: "connected"; subprotocol: string }> {
     this.holdingExternal = true;
     this.clearReconnect();
+    this.persistedState = undefined;
     await this.settleClose();
     return this.open(url, true);
   }
@@ -70,6 +164,7 @@ export class OcppSession {
   async disconnect(restoreBootstrap: boolean): Promise<{ state: "disconnected" }> {
     this.holdingExternal = !restoreBootstrap;
     this.clearReconnect();
+    this.persistedState = undefined;
     await this.settleClose();
     await this.notifyState({ state: "disconnected" });
     if (restoreBootstrap && !this.stopped) {
@@ -160,6 +255,9 @@ export class OcppSession {
         }
         if (this.socket === socket) {
           this.socket = undefined;
+          if (this.chargePoint) {
+            this.persistedState = this.chargePoint.getState();
+          }
           this.chargePoint?.close();
           this.chargePoint = undefined;
         }
@@ -194,15 +292,26 @@ export class OcppSession {
         identity: this.options.identity,
         vendor: this.options.vendor ?? "Pratvoltix",
         model: this.options.model ?? "Lab-One",
+        initialState: this.persistedState,
       },
       this.options.faults,
-      { disconnectOcpp: () => socket.close() },
+      {
+        disconnectOcpp: () => socket.close(),
+        sendRawOcpp: (data: string) => {
+          try {
+            socket.send(data);
+          } catch {
+            // Socket may be closed
+          }
+        },
+      },
     );
     this.chargePoint = chargePoint;
     void chargePoint.announce().then(
       () => {
         if (generation === this.generation) {
           this.options.log?.(`${this.options.identity} accepted by CSMS`);
+          this.continueStormIfNeeded(generation);
         }
       },
       (error: unknown) => {
@@ -243,12 +352,51 @@ export class OcppSession {
     if (this.stopped || this.reconnectTimer || this.holdingExternal) {
       return;
     }
+    const delayMs = this.reconnectStorm ? this.reconnectStorm.burstDelayMs : 2_000;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
         this.logIssue(error);
       });
-    }, 2_000);
+    }, delayMs);
+  }
+
+  /** After a successful Boot/announce, keep dropping while storm slots remain. */
+  private continueStormIfNeeded(generation: number): void {
+    if (!this.reconnectStorm || this.stopped || generation !== this.generation) {
+      return;
+    }
+    if (this.stormBurstRemaining > 0) {
+      this.stormBurstRemaining -= 1;
+    }
+    if (this.stormBurstRemaining > 0) {
+      const delayMs = this.reconnectStorm.burstDelayMs;
+      this.clearReconnect();
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined;
+        if (!this.reconnectStorm || generation !== this.generation) {
+          return;
+        }
+        this.options.log?.(`${this.options.identity} storm drop (${this.stormBurstRemaining} remaining)`);
+        try {
+          this.socket?.close();
+        } catch {
+          // ignore
+        }
+      }, delayMs);
+      return;
+    }
+    // Burst exhausted — pause then start another burst until clearReconnectStorm.
+    const intervalMs = this.reconnectStorm.intervalMs;
+    this.clearReconnect();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.reconnectStorm || generation !== this.generation) {
+        return;
+      }
+      this.stormBurstRemaining = this.reconnectStorm.burstCount;
+      this.continueStormIfNeeded(generation);
+    }, intervalMs);
   }
 
   private clearReconnect(): void {

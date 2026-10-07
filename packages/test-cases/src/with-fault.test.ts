@@ -67,6 +67,7 @@ describe("simulator catalog requirements", () => {
       "reset-call-error",
       "get-configuration-timeout",
       "delayed-trigger-heartbeat",
+      "malformed-response",
     ]);
     expect(negative.cases.every((entry) => entry.requirements.includes("simulator-control"))).toBe(true);
     const described = catalog.describe();

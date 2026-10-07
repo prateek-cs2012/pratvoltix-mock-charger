@@ -18,6 +18,18 @@ export const CONTROL_ACTIONS = [
   "emit-ocpp",
   "ocpp-frame",
   "ocpp-state",
+  "set-reconnect-storm",
+  "clear-reconnect-storm",
+  "set-outbound-delay",
+  "clear-outbound-delay",
+  "set-local-auth-list",
+  "get-local-auth-list",
+  "upload-offline-transactions",
+  "queue-offline-transaction",
+  "retry-start-transaction",
+  "retry-stop-transaction",
+  "restore-transaction-state",
+  "reset-connector-idle",
 ] as const;
 
 export type ControlAction = (typeof CONTROL_ACTIONS)[number];

@@ -3,12 +3,16 @@ import {
   CONTROL_SUBPROTOCOL,
   ControlChannel,
   ControlProtocolError,
+  MAX_DELAY_MS,
   SIMULATOR_CAPABILITY,
   validateFaultRule,
+  validateReconnectStormConfig,
   type ControlRequest,
+  type ReconnectStormConfig,
 } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
+import type { LocalAuthEntry, OfflineTransaction } from "./mock-charge-point.js";
 
 const BASE_BACKOFF_MS = 200;
 const MAX_BACKOFF_MS = 5_000;
@@ -36,6 +40,22 @@ export interface SimulatorControlClientOptions {
   connectOcpp?: (url: string) => Promise<{ state: "connected"; subprotocol: string }>;
   disconnectTarget?: (restoreBootstrap: boolean) => Promise<{ state: "disconnected" }>;
   emitOcpp?: (action: string, connectorId?: number) => Promise<{ status: "Accepted" }>;
+  setReconnectStorm?: (config: ReconnectStormConfig | undefined) => void;
+  getReconnectStorm?: () => ReconnectStormConfig | undefined;
+  resetToIdle?: () => Promise<void>;
+  setOutboundDelay?: (delayMs: number) => void;
+  getOutboundDelay?: () => number;
+  setLocalAuthList?: (entries: LocalAuthEntry[]) => void;
+  getLocalAuthList?: () => LocalAuthEntry[];
+  uploadOfflineTransactions?: () => Promise<number>;
+  queueOfflineTransaction?: (tx: OfflineTransaction) => void;
+  retryStartTransaction?: (idTag: string, connectorId?: number) => Promise<void>;
+  retryStopTransaction?: () => Promise<void>;
+  restoreTransactionState?: (state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }) => void;
   openSocket?: (url: string) => ControlSocket;
   schedule?: (callback: () => void, delayMs: number) => { cancel(): void };
 }
@@ -114,7 +134,7 @@ export class SimulatorControlClient {
     }, delayMs);
   }
 
-  private handleRequest(request: ControlRequest): unknown {
+  private async handleRequest(request: ControlRequest): Promise<unknown> {
     try {
       return this.dispatch(request);
     } catch (error) {
@@ -158,7 +178,93 @@ export class SimulatorControlClient {
         simulatorVersion: this.options.simulatorVersion,
         capabilities: [SIMULATOR_CAPABILITY],
         activeFaults: this.options.faults.list(),
+        reconnectStorm: this.options.getReconnectStorm?.(),
       };
+    }
+    if (request.action === "set-reconnect-storm") {
+      if (!this.options.setReconnectStorm) {
+        throw new ControlProtocolError("not-ready", "Reconnect storm is not supported.");
+      }
+      const config = validateReconnectStormConfig(request.payload);
+      this.options.setReconnectStorm(config);
+      return { configured: true, ...config };
+    }
+    if (request.action === "clear-reconnect-storm") {
+      if (!this.options.setReconnectStorm) {
+        throw new ControlProtocolError("not-ready", "Reconnect storm is not supported.");
+      }
+      this.options.setReconnectStorm(undefined);
+      return { cleared: true };
+    }
+    if (request.action === "set-outbound-delay") {
+      if (!this.options.setOutboundDelay) {
+        throw new ControlProtocolError("not-ready", "Outbound delay is not supported.");
+      }
+      const delayMs = readDelayMs(request.payload);
+      this.options.setOutboundDelay(delayMs);
+      return { configured: true, delayMs };
+    }
+    if (request.action === "clear-outbound-delay") {
+      if (!this.options.setOutboundDelay) {
+        throw new ControlProtocolError("not-ready", "Outbound delay is not supported.");
+      }
+      this.options.setOutboundDelay(0);
+      return { cleared: true };
+    }
+    if (request.action === "set-local-auth-list") {
+      if (!this.options.setLocalAuthList) {
+        throw new ControlProtocolError("not-ready", "Local auth list is not supported.");
+      }
+      const entries = readLocalAuthList(request.payload);
+      this.options.setLocalAuthList(entries);
+      return { configured: true, count: entries.length };
+    }
+    if (request.action === "get-local-auth-list") {
+      if (!this.options.getLocalAuthList) {
+        throw new ControlProtocolError("not-ready", "Local auth list is not supported.");
+      }
+      return { entries: this.options.getLocalAuthList() };
+    }
+    if (request.action === "upload-offline-transactions") {
+      if (!this.options.uploadOfflineTransactions) {
+        throw new ControlProtocolError("not-ready", "Offline transactions are not supported.");
+      }
+      return this.options.uploadOfflineTransactions().then((uploaded) => ({ uploaded }));
+    }
+    if (request.action === "queue-offline-transaction") {
+      if (!this.options.queueOfflineTransaction) {
+        throw new ControlProtocolError("not-ready", "Offline transactions are not supported.");
+      }
+      const tx = readOfflineTransaction(request.payload);
+      this.options.queueOfflineTransaction(tx);
+      return { queued: true };
+    }
+    if (request.action === "retry-start-transaction") {
+      if (!this.options.retryStartTransaction) {
+        throw new ControlProtocolError("not-ready", "Retry start is not supported.");
+      }
+      const { idTag, connectorId } = readRetryStart(request.payload);
+      return this.options.retryStartTransaction(idTag, connectorId).then(() => ({ started: true }));
+    }
+    if (request.action === "retry-stop-transaction") {
+      if (!this.options.retryStopTransaction) {
+        throw new ControlProtocolError("not-ready", "Retry stop is not supported.");
+      }
+      return this.options.retryStopTransaction().then(() => ({ stopped: true }));
+    }
+    if (request.action === "reset-connector-idle") {
+      if (!this.options.resetToIdle) {
+        throw new ControlProtocolError("not-ready", "reset-connector-idle is not supported.");
+      }
+      return this.options.resetToIdle().then(() => ({ reset: true }));
+    }
+    if (request.action === "restore-transaction-state") {
+      if (!this.options.restoreTransactionState) {
+        throw new ControlProtocolError("not-ready", "Restore transaction state is not supported.");
+      }
+      const state = readRestoreTransactionState(request.payload);
+      this.options.restoreTransactionState(state);
+      return { restored: true };
     }
     throw new ControlProtocolError("not-supported", `Unsupported simulator action ${request.action}.`);
   }
@@ -248,6 +354,86 @@ function readOptionalConnector(payload: unknown): number | undefined {
   return typeof connectorId === "number" ? connectorId : undefined;
 }
 
+function readDelayMs(payload: unknown): number {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "set-outbound-delay requires a delayMs.");
+  }
+  const delayMs = (payload as { delayMs?: unknown }).delayMs;
+  if (typeof delayMs !== "number" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_DELAY_MS) {
+    throw new ControlProtocolError("invalid-message", `delayMs must be an integer from 0 to ${MAX_DELAY_MS}.`);
+  }
+  return delayMs;
+}
+
+function readLocalAuthList(payload: unknown): LocalAuthEntry[] {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "set-local-auth-list requires entries.");
+  }
+  const entries = (payload as { entries?: unknown }).entries;
+  if (!Array.isArray(entries)) {
+    throw new ControlProtocolError("invalid-message", "entries must be an array.");
+  }
+  return entries.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must be an object.`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.idTag !== "string" || e.idTag.length === 0) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must have an idTag.`);
+    }
+    const validStatuses = ["Accepted", "Blocked", "Expired", "Invalid", "ConcurrentTx"];
+    if (typeof e.status !== "string" || !validStatuses.includes(e.status)) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must have a valid status.`);
+    }
+    return {
+      idTag: e.idTag,
+      status: e.status as LocalAuthEntry["status"],
+      ...(typeof e.expiryDate === "string" ? { expiryDate: e.expiryDate } : {}),
+    };
+  });
+}
+
+function readOfflineTransaction(payload: unknown): OfflineTransaction {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "queue-offline-transaction requires transaction data.");
+  }
+  const p = payload as Record<string, unknown>;
+  if (typeof p.localId !== "number" || !Number.isInteger(p.localId)) {
+    throw new ControlProtocolError("invalid-message", "localId must be an integer.");
+  }
+  if (typeof p.connectorId !== "number" || !Number.isInteger(p.connectorId)) {
+    throw new ControlProtocolError("invalid-message", "connectorId must be an integer.");
+  }
+  if (typeof p.idTag !== "string" || p.idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "idTag must be a non-empty string.");
+  }
+  if (typeof p.meterStart !== "number") {
+    throw new ControlProtocolError("invalid-message", "meterStart must be a number.");
+  }
+  if (typeof p.meterStop !== "number") {
+    throw new ControlProtocolError("invalid-message", "meterStop must be a number.");
+  }
+  if (typeof p.startTimestamp !== "string") {
+    throw new ControlProtocolError("invalid-message", "startTimestamp must be a string.");
+  }
+  if (typeof p.stopTimestamp !== "string") {
+    throw new ControlProtocolError("invalid-message", "stopTimestamp must be a string.");
+  }
+  if (typeof p.reason !== "string") {
+    throw new ControlProtocolError("invalid-message", "reason must be a string.");
+  }
+  return {
+    localId: p.localId,
+    connectorId: p.connectorId,
+    idTag: p.idTag,
+    meterStart: p.meterStart,
+    meterStop: p.meterStop,
+    startTimestamp: p.startTimestamp,
+    stopTimestamp: p.stopTimestamp,
+    reason: p.reason,
+  };
+}
+
 function openWebSocket(url: string): ControlSocket {
   return new WebSocket(url, [CONTROL_SUBPROTOCOL]);
 }
@@ -275,5 +461,47 @@ export function localSimulatorController(faults: FaultEngine) {
     async listFaults() {
       return faults.list();
     },
+  };
+}
+
+function readRetryStart(payload: unknown): { idTag: string; connectorId?: number } {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction requires idTag.");
+  }
+  const idTag = (payload as { idTag?: unknown }).idTag;
+  if (typeof idTag !== "string" || idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction requires idTag.");
+  }
+  const connectorId = (payload as { connectorId?: unknown }).connectorId;
+  if (connectorId !== undefined && (typeof connectorId !== "number" || !Number.isInteger(connectorId))) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction connectorId must be an integer.");
+  }
+  return { idTag, ...(typeof connectorId === "number" ? { connectorId } : {}) };
+}
+
+function readRestoreTransactionState(payload: unknown): {
+  transactionId: number;
+  idTag: string;
+  connectorStatus?: string;
+} {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires transactionId and idTag.");
+  }
+  const transactionId = (payload as { transactionId?: unknown }).transactionId;
+  const idTag = (payload as { idTag?: unknown }).idTag;
+  if (typeof transactionId !== "number" || !Number.isInteger(transactionId)) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires transactionId.");
+  }
+  if (typeof idTag !== "string" || idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires idTag.");
+  }
+  const connectorStatus = (payload as { connectorStatus?: unknown }).connectorStatus;
+  if (connectorStatus !== undefined && typeof connectorStatus !== "string") {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state connectorStatus must be a string.");
+  }
+  return {
+    transactionId,
+    idTag,
+    ...(typeof connectorStatus === "string" ? { connectorStatus } : {}),
   };
 }

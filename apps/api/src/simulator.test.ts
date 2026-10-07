@@ -92,7 +92,7 @@ describe("simulator control API", () => {
     const rejected = await post(base, { chargePointIdentity: "CP001", selection: { suiteIds: ["simulator-negative"] } });
     expect(rejected.status).toBe(409);
     expect(rejected.body.error).toBe(
-      "Station CP001 is missing capability simulator-control required by cases: remote-start-rejected, reset-call-error, get-configuration-timeout, delayed-trigger-heartbeat",
+      "Station CP001 is missing capability simulator-control required by cases: remote-start-rejected, reset-call-error, get-configuration-timeout, delayed-trigger-heartbeat, malformed-response",
     );
     expect(create).not.toHaveBeenCalled();
 

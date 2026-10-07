@@ -2,10 +2,16 @@ import {
   ControlProtocolError,
   readClearFaultResult,
   readFaultSummaries,
+  validateReconnectStormConfig,
   type ControlChannel,
+  type ExtendedSimulatorController,
   type FaultRule,
   type FaultSummary,
   type HelloPayload,
+  type LocalAuthEntry,
+  type OfflineTransactionEntry,
+  type ReconnectStormConfig,
+  type ReconnectStormController,
   type SimulatorController,
 } from "@pratvoltix/simulator-control";
 
@@ -122,10 +128,122 @@ export class SimulatorRegistry {
     };
   }
 
+  reconnectStormController(identity: string): ReconnectStormController {
+    const session = this.requireConnected(identity);
+    return {
+      setReconnectStorm: async (config: ReconnectStormConfig) => {
+        const validated = validateReconnectStormConfig(config);
+        await session.channel.request("set-reconnect-storm", validated);
+        session.lastSeenAt = new Date().toISOString();
+      },
+      clearReconnectStorm: async () => {
+        await session.channel.request("clear-reconnect-storm", {});
+        session.lastSeenAt = new Date().toISOString();
+      },
+    };
+  }
+
+  extendedSimulatorController(identity: string): ExtendedSimulatorController {
+    const registry = this;
+    return {
+      setOutboundDelay: async (delayMs: number) => {
+        await registry.setOutboundDelay(identity, delayMs);
+      },
+      clearOutboundDelay: async () => {
+        await registry.clearOutboundDelay(identity);
+      },
+      setLocalAuthList: async (entries: LocalAuthEntry[]) => {
+        await registry.setLocalAuthList(identity, entries);
+      },
+      getLocalAuthList: async () => {
+        return registry.getLocalAuthList(identity);
+      },
+      queueOfflineTransaction: async (tx: OfflineTransactionEntry) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("queue-offline-transaction", tx);
+        session.lastSeenAt = new Date().toISOString();
+      },
+      uploadOfflineTransactions: async () => {
+        return registry.uploadOfflineTransactions(identity);
+      },
+      retryStartTransaction: async (idTag: string, connectorId?: number) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("retry-start-transaction", {
+          idTag,
+          ...(connectorId !== undefined ? { connectorId } : {}),
+        });
+        session.lastSeenAt = new Date().toISOString();
+      },
+      retryStopTransaction: async () => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("retry-stop-transaction", {});
+        session.lastSeenAt = new Date().toISOString();
+      },
+      restoreTransactionState: async (state) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("restore-transaction-state", state);
+        session.lastSeenAt = new Date().toISOString();
+      },
+    };
+  }
+
+  async setOutboundDelay(identity: string, delayMs: number): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("set-outbound-delay", { delayMs });
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async clearOutboundDelay(identity: string): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("clear-outbound-delay", {});
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async setLocalAuthList(identity: string, entries: Array<{ idTag: string; status: string; expiryDate?: string }>): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("set-local-auth-list", { entries });
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async getLocalAuthList(identity: string): Promise<Array<{ idTag: string; status: string; expiryDate?: string }>> {
+    const session = this.requireConnected(identity);
+    const payload = await session.channel.request("get-local-auth-list", {});
+    session.lastSeenAt = new Date().toISOString();
+    if (typeof payload !== "object" || payload === null || !Array.isArray((payload as { entries?: unknown }).entries)) {
+      return [];
+    }
+    return (payload as { entries: Array<{ idTag: string; status: string; expiryDate?: string }> }).entries;
+  }
+
+  async uploadOfflineTransactions(identity: string): Promise<number> {
+    const session = this.requireConnected(identity);
+    const payload = await session.channel.request("upload-offline-transactions", {});
+    session.lastSeenAt = new Date().toISOString();
+    if (typeof payload !== "object" || payload === null || typeof (payload as { uploaded?: unknown }).uploaded !== "number") {
+      return 0;
+    }
+    return (payload as { uploaded: number }).uploaded;
+  }
+
   async ensureClean(identity: string): Promise<void> {
     const session = this.requireConnected(identity);
     try {
       await session.channel.request("clear-all-faults", {});
+      try {
+        await session.channel.request("clear-reconnect-storm", {});
+      } catch {
+        // Older simulators may not support storm — ignore.
+      }
+      try {
+        await session.channel.request("clear-outbound-delay", {});
+      } catch {
+        // ignore
+      }
+      try {
+        await session.channel.request("reset-connector-idle", {});
+      } catch {
+        // ignore — prefer Available when supported
+      }
       const faults = await this.refreshFaults(session);
       if (faults.length > 0) {
         throw new ControlProtocolError("not-clean", `Simulator ${identity} still has ${faults.length} active faults.`);

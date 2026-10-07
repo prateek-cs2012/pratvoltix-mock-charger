@@ -1,4 +1,4 @@
-import type { FaultRule, FaultSummary } from "./faults.js";
+import type { FaultRule, FaultSummary, ReconnectStormConfig } from "./faults.js";
 
 export { ControlProtocolError } from "./errors.js";
 export {
@@ -8,9 +8,11 @@ export {
   readFaultSummaries,
   summarizeFault,
   validateFaultRule,
+  validateReconnectStormConfig,
   type FaultEffect,
   type FaultRule,
   type FaultSummary,
+  type ReconnectStormConfig,
 } from "./faults.js";
 export {
   CONTROL_ACTIONS,
@@ -50,4 +52,42 @@ export interface SimulatorController {
   clearFault(id: string): Promise<ClearFaultResult>;
   clearAllFaults(): Promise<void>;
   listFaults(): Promise<FaultSummary[]>;
+}
+
+export interface ReconnectStormController {
+  setReconnectStorm(config: ReconnectStormConfig): Promise<void>;
+  clearReconnectStorm(): Promise<void>;
+}
+
+export interface LocalAuthEntry {
+  idTag: string;
+  status: string;
+  expiryDate?: string;
+}
+
+export interface OfflineTransactionEntry {
+  localId: number;
+  connectorId: number;
+  idTag: string;
+  meterStart: number;
+  meterStop: number;
+  startTimestamp: string;
+  stopTimestamp: string;
+  reason: string;
+}
+
+export interface ExtendedSimulatorController {
+  setOutboundDelay(delayMs: number): Promise<void>;
+  clearOutboundDelay(): Promise<void>;
+  setLocalAuthList(entries: LocalAuthEntry[]): Promise<void>;
+  getLocalAuthList(): Promise<LocalAuthEntry[]>;
+  queueOfflineTransaction(tx: OfflineTransactionEntry): Promise<void>;
+  uploadOfflineTransactions(): Promise<number>;
+  retryStartTransaction(idTag: string, connectorId?: number): Promise<void>;
+  retryStopTransaction(): Promise<void>;
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }): Promise<void>;
 }

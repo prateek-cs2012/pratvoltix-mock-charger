@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Ocpp16ErrorCode } from "./actions.js";
-import { OcppCallError, OcppProtocolError, OcppResponseError, OcppTimeoutError } from "./errors.js";
+import { OcppCallError, OcppConnectionClosedError, OcppProtocolError, OcppResponseError, OcppTimeoutError } from "./errors.js";
 import {
   CALL,
   CALL_ERROR,
@@ -99,7 +99,7 @@ export class OcppConnection implements OcppPeer {
       this.handleRaw(raw);
     });
     this.transport.onClose(() => {
-      this.failAll(new Error("OCPP connection closed"));
+      this.failAll(new OcppConnectionClosedError());
     });
   }
 
@@ -176,7 +176,7 @@ export class OcppConnection implements OcppPeer {
 
   close(): void {
     this.transport.close();
-    this.failAll(new Error("OCPP connection closed"));
+    this.failAll(new OcppConnectionClosedError());
   }
 
   private reply(uniqueId: string, payload: Record<string, unknown>): void {

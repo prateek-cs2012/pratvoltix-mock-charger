@@ -7,6 +7,7 @@ import { executeExternalRun } from "./external-run.js";
 import { ExternalOcppSession, type MirroredFrame } from "./external-peer.js";
 import { TestRunModel, type TestRunRecord } from "./models/test-run.js";
 import type { SessionRegistry } from "./ocpp/registry.js";
+import { createLivePeer } from "./ocpp/live-peer.js";
 import type { SimulatorRegistry } from "./simulator/registry.js";
 import { RunTraceCollector } from "./trace-collector.js";
 import { presentTraceSummary } from "./trace-query.js";
@@ -110,23 +111,34 @@ export async function executeRun(
   const collector = new RunTraceCollector(session.connection);
   collector.start();
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
+  const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
+  const extendedSimulator = needsSimulator ? simulators?.extendedSimulatorController(identity) : undefined;
   try {
     const report = await runPlan({
       steps: planSteps(run),
       cases: testCases,
       createContext: (helpers) => ({
         ...helpers,
-        peer: session.connection,
+        peer: createLivePeer(registry, identity),
         chargePointId: identity,
         profile,
         ...(simulator ? { simulator } : {}),
+        ...(reconnectStormController ? { reconnectStormController } : {}),
+        ...(extendedSimulator ? { extendedSimulator } : {}),
       }),
       lifecycle: {
         onCaseStart(step) {
           collector.setActiveCase(step.id);
         },
-        onCaseFinish() {
+        async onCaseFinish() {
           collector.setActiveCase(undefined);
+          if (needsSimulator) {
+            try {
+              await simulators?.ensureClean(identity);
+            } catch (error) {
+              console.warn(`[run] post-case cleanup for ${identity}:`, error);
+            }
+          }
         },
       },
     });
@@ -326,6 +338,8 @@ async function runStoredPlan(
     return;
   }
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
+  const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
+  const extendedSimulator = needsSimulator ? simulators?.extendedSimulatorController(identity) : undefined;
   const report = await runPlan({
     steps: planSteps(run),
     cases: testCases,
@@ -335,6 +349,8 @@ async function runStoredPlan(
       chargePointId: identity,
       profile,
       ...(simulator ? { simulator } : {}),
+      ...(reconnectStormController ? { reconnectStormController } : {}),
+      ...(extendedSimulator ? { extendedSimulator } : {}),
     }),
     lifecycle: {
       onCaseStart(step) {

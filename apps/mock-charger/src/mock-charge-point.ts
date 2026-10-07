@@ -143,8 +143,8 @@ export class MockChargePoint {
   }
 
   /** Lab helper: run the Stop path (for idempotency tests). */
-  async finishTransactionForLab(): Promise<void> {
-    await this.finishTransaction();
+  async finishTransactionForLab(reason = "Remote"): Promise<void> {
+    await this.finishTransaction(reason);
   }
 
   /**
@@ -175,6 +175,37 @@ export class MockChargePoint {
   async notifyAvailable(): Promise<void> {
     this.connectorStatus = "Available";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
+  }
+
+  /**
+   * Local (cable) start: Preparing → Authorize/StartTransaction → Charging.
+   * Not driven by RemoteStartTransaction.
+   */
+  async localStart(idTag: string, connectorId?: number): Promise<void> {
+    if (this.transactionId !== null) {
+      throw new Error("Cannot local-start while a transaction is active");
+    }
+    const targetConnector = connectorId ?? this.connectorId;
+    this.connectorStatus = "Preparing";
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Preparing"));
+    await this.beginTransaction(idTag, targetConnector);
+  }
+
+  /**
+   * Local stop with an explicit StopTransaction.reason (Local, EVDisconnected, …).
+   * Emits Finishing before Stop, then Available.
+   */
+  async localStop(reason = "Local"): Promise<void> {
+    await this.finishTransaction(reason);
+  }
+
+  /** Force a StatusNotification (Suspended*, Faulted, …) without ending the tx. */
+  async setConnectorStatus(status: ConnectorStatus, errorCode = "NoError"): Promise<void> {
+    this.connectorStatus = status;
+    await this.connection.call(Ocpp16Action.StatusNotification, {
+      ...this.statusPayload(status),
+      errorCode,
+    });
   }
 
   async announce(): Promise<void> {
@@ -403,7 +434,7 @@ export class MockChargePoint {
     return { status: "Accepted" };
   }
 
-  private async finishTransaction(): Promise<void> {
+  private async finishTransaction(reason = "Remote"): Promise<void> {
     const transactionId = this.transactionId;
     if (transactionId === null) {
       return;
@@ -416,6 +447,9 @@ export class MockChargePoint {
       return;
     }
 
+    this.connectorStatus = "Finishing";
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Finishing"));
+
     this.meterWh += 250;
     const meterStop = this.meterWh;
     const timestamp = new Date().toISOString();
@@ -424,7 +458,7 @@ export class MockChargePoint {
       transactionId,
       meterStop,
       timestamp,
-      reason: "Remote",
+      reason,
     });
 
     this.lastStopTxId = transactionId;

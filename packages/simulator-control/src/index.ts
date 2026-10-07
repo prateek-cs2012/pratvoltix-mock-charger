@@ -90,4 +90,7 @@ export interface ExtendedSimulatorController {
     idTag: string;
     connectorStatus?: string;
   }): Promise<void>;
+  localStart(idTag: string, connectorId?: number): Promise<void>;
+  localStop(reason?: string): Promise<void>;
+  setConnectorStatus(status: string, errorCode?: string): Promise<void>;
 }

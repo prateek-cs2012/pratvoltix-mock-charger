@@ -97,6 +97,44 @@ export class OcppSession {
     }
   }
 
+  async localStart(idTag: string, connectorId?: number): Promise<void> {
+    if (!this.chargePoint) {
+      throw new ControlProtocolError("not-ready", "OCPP session is not connected.");
+    }
+    await this.chargePoint.localStart(idTag, connectorId);
+    this.persistedState = this.chargePoint.getState();
+  }
+
+  async localStop(reason?: string): Promise<void> {
+    if (!this.chargePoint) {
+      throw new ControlProtocolError("not-ready", "OCPP session is not connected.");
+    }
+    await this.chargePoint.localStop(reason);
+    this.persistedState = this.chargePoint.getState();
+  }
+
+  async setConnectorStatus(status: string, errorCode?: string): Promise<void> {
+    if (!this.chargePoint) {
+      throw new ControlProtocolError("not-ready", "OCPP session is not connected.");
+    }
+    const allowed: ConnectorStatus[] = [
+      "Available",
+      "Preparing",
+      "Charging",
+      "SuspendedEVSE",
+      "SuspendedEV",
+      "Finishing",
+      "Reserved",
+      "Unavailable",
+      "Faulted",
+    ];
+    if (!allowed.includes(status as ConnectorStatus)) {
+      throw new ControlProtocolError("invalid-message", `Unsupported connector status ${status}.`);
+    }
+    await this.chargePoint.setConnectorStatus(status as ConnectorStatus, errorCode);
+    this.persistedState = this.chargePoint.getState();
+  }
+
   async uploadOfflineTransactions(): Promise<number> {
     return this.chargePoint?.uploadOfflineTransactions() ?? 0;
   }

@@ -171,6 +171,118 @@ describe("ChargePointState persistence", () => {
   });
 });
 
+
+describe("local cable start / stop (Gap 8)", () => {
+  it("localStart emits Preparing then Charging with Authorize+StartTransaction", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    const statuses: string[] = [];
+    const actions: string[] = [];
+
+    csms.onCall(async (call) => {
+      actions.push(call.action);
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.StatusNotification) {
+        statuses.push(String(call.payload["status"]));
+        return {};
+      }
+      if (call.action === Ocpp16Action.Authorize) {
+        return { idTagInfo: { status: "Accepted" } };
+      }
+      if (call.action === Ocpp16Action.StartTransaction) {
+        return { transactionId: 4242, idTagInfo: { status: "Accepted" } };
+      }
+      return {};
+    });
+
+    await chargePoint.announce();
+    await chargePoint.localStart("TAG-LOCAL", 1);
+
+    expect(statuses).toContain("Preparing");
+    expect(statuses[statuses.length - 1]).toBe("Charging");
+    expect(actions).toContain(Ocpp16Action.Authorize);
+    expect(actions).toContain(Ocpp16Action.StartTransaction);
+    expect(chargePoint.getState().transactionId).toBe(4242);
+    expect(chargePoint.getState().idTag).toBe("TAG-LOCAL");
+    chargePoint.close();
+  });
+
+  it("localStop emits Finishing, StopTransaction.reason=Local, then Available", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), {
+      identity: "CP001",
+      initialState: {
+        transactionId: 4242,
+        connectorStatus: "Charging",
+        meterWh: 2_000,
+        idTag: "TAG-LOCAL",
+      },
+    });
+    const statuses: string[] = [];
+    let stopReason: string | undefined;
+
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.StatusNotification) {
+        statuses.push(String(call.payload["status"]));
+        return {};
+      }
+      if (call.action === Ocpp16Action.StopTransaction) {
+        stopReason = call.payload["reason"] as string | undefined;
+        return { idTagInfo: { status: "Accepted" } };
+      }
+      return {};
+    });
+
+    await chargePoint.announce();
+    await chargePoint.localStop("Local");
+
+    expect(statuses).toContain("Finishing");
+    expect(statuses[statuses.length - 1]).toBe("Available");
+    expect(stopReason).toBe("Local");
+    expect(chargePoint.getState().transactionId).toBeNull();
+    chargePoint.close();
+  });
+
+  it("setConnectorStatus injects SuspendedEVSE without ending the transaction", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), {
+      identity: "CP001",
+      initialState: {
+        transactionId: 7,
+        connectorStatus: "Charging",
+        meterWh: 1_500,
+        idTag: "TAG1",
+      },
+    });
+    let lastStatus: string | undefined;
+
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.StatusNotification) {
+        lastStatus = call.payload["status"] as string;
+        return {};
+      }
+      return {};
+    });
+
+    await chargePoint.announce();
+    await chargePoint.setConnectorStatus("SuspendedEVSE");
+    expect(lastStatus).toBe("SuspendedEVSE");
+    expect(chargePoint.hasActiveTransaction()).toBe(true);
+    chargePoint.close();
+  });
+});
+
 describe("LocalAuthList and GetLocalListVersion", () => {
   it("returns 0 for GetLocalListVersion before any SendLocalList", async () => {
     const { left, right } = linkTransports();

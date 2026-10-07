@@ -44,6 +44,9 @@ const control = new SimulatorControlClient({
   retryStopTransaction: () => session.retryStopTransaction(),
   restoreTransactionState: (state) => session.restoreTransactionState(state),
   resetToIdle: () => session.resetToIdle(),
+  localStart: (idTag, connectorId) => session.localStart(idTag, connectorId),
+  localStop: (reason) => session.localStop(reason),
+  setConnectorStatus: (status, errorCode) => session.setConnectorStatus(status, errorCode),
 });
 notifyControl = (action, payload) => control.notify(action, payload);
 

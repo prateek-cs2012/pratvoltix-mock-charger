@@ -166,6 +166,24 @@ export class SimulatorRegistry {
       uploadOfflineTransactions: async () => {
         return registry.uploadOfflineTransactions(identity);
       },
+      retryStartTransaction: async (idTag: string, connectorId?: number) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("retry-start-transaction", {
+          idTag,
+          ...(connectorId !== undefined ? { connectorId } : {}),
+        });
+        session.lastSeenAt = new Date().toISOString();
+      },
+      retryStopTransaction: async () => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("retry-stop-transaction", {});
+        session.lastSeenAt = new Date().toISOString();
+      },
+      restoreTransactionState: async (state) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("restore-transaction-state", state);
+        session.lastSeenAt = new Date().toISOString();
+      },
     };
   }
 

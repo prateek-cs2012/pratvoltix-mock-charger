@@ -40,6 +40,9 @@ const control = new SimulatorControlClient({
   getLocalAuthList: () => session.getLocalAuthList(),
   uploadOfflineTransactions: () => session.uploadOfflineTransactions(),
   queueOfflineTransaction: (tx) => session.queueOfflineTransaction(tx),
+  retryStartTransaction: (idTag, connectorId) => session.retryStartTransaction(idTag, connectorId),
+  retryStopTransaction: () => session.retryStopTransaction(),
+  restoreTransactionState: (state) => session.restoreTransactionState(state),
 });
 notifyControl = (action, payload) => control.notify(action, payload);
 

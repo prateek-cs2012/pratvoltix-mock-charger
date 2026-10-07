@@ -20,7 +20,7 @@ Requests and responses share a `requestId`:
 { "type": "response", "requestId": "abc", "ok": true, "payload": {} }
 ```
 
-Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`, `connect-ocpp`, `disconnect-ocpp`, `emit-ocpp`, `ocpp-frame`, `ocpp-state`, `set-reconnect-storm`, `clear-reconnect-storm`, `set-outbound-delay`, `clear-outbound-delay`, `set-local-auth-list`, `get-local-auth-list`, `upload-offline-transactions`, `queue-offline-transaction`.
+Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`, `connect-ocpp`, `disconnect-ocpp`, `emit-ocpp`, `ocpp-frame`, `ocpp-state`, `set-reconnect-storm`, `clear-reconnect-storm`, `set-outbound-delay`, `clear-outbound-delay`, `set-local-auth-list`, `get-local-auth-list`, `upload-offline-transactions`, `queue-offline-transaction`, `retry-start-transaction`, `retry-stop-transaction`, `restore-transaction-state`.
 
 The mock charger sends `hello` after it connects:
 
@@ -180,12 +180,21 @@ The OCPP `ClearCache` command clears only the **Authorization Cache** (runtime c
 
 ## Duplicate message handling (Gap 2)
 
-The mock charger implements idempotent handling for StartTransaction and StopTransaction. If a duplicate request arrives with the same key parameters:
+Defined behavior:
 
-- **StartTransaction**: Key is `connectorId:idTag:meterStart`. A duplicate returns the same transactionId without sending another StartTransaction to the CSMS.
-- **StopTransaction**: Key is `transactionId`. A duplicate returns the same response without sending another StopTransaction to the CSMS.
+- **Second `RemoteStartTransaction` while a transaction is active** → `{ status: "Rejected" }` (existing).
+- **Duplicate Start** with the same `connectorId:idTag:meterStart` key (via `retry-start-transaction` / `beginTransactionForLab`) → reuse cached `transactionId`; do **not** re-CALL `StartTransaction` to the CSMS.
+- **Duplicate Stop** for the same `transactionId` after a successful Stop was already sent → after `restore-transaction-state` + `retry-stop-transaction`, do **not** re-CALL `StopTransaction` to the CSMS (cached stop).
 
-This enables testing CSMS behavior when the charger retries messages after a network disruption.
+Lab control actions:
+
+```json
+{ "type": "request", "requestId": "rs1", "action": "retry-start-transaction", "payload": { "idTag": "TAG001", "connectorId": 1 } }
+{ "type": "request", "requestId": "rst1", "action": "restore-transaction-state", "payload": { "transactionId": 42, "idTag": "TAG001", "connectorStatus": "Charging" } }
+{ "type": "request", "requestId": "rsp1", "action": "retry-stop-transaction", "payload": {} }
+```
+
+Catalog cases: `duplicate-start`, `duplicate-stop`.
 
 ## Malformed response injection (Gap 7)
 
@@ -194,7 +203,7 @@ The `malformed-response` fault effect sends arbitrary raw data on the OCPP WebSo
 ```ts
 {
   id: "malformed-json",
-  match: { action: "Heartbeat", occurrence: 1 },
+  match: { action: "GetConfiguration", occurrence: 1 },
   effect: { type: "malformed-response", rawPayload: "not valid json at all" },
   consume: "once"
 }

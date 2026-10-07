@@ -2,7 +2,7 @@ import { OcppConnection, transportFromWebSocket } from "@pratvoltix/ocpp";
 import { ControlProtocolError, sanitizeCsmsUrl, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
-import { MockChargePoint, type ChargePointState, type LocalAuthEntry, type OfflineTransaction } from "./mock-charge-point.js";
+import { MockChargePoint, type ChargePointState, type ConnectorStatus, type LocalAuthEntry, type OfflineTransaction } from "./mock-charge-point.js";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 
@@ -82,6 +82,34 @@ export class OcppSession {
 
   queueOfflineTransaction(tx: OfflineTransaction): void {
     this.chargePoint?.queueOfflineTransaction(tx);
+  }
+
+  async retryStartTransaction(idTag: string, connectorId?: number): Promise<void> {
+    if (!this.chargePoint) {
+      throw new Error("Charge point is not connected");
+    }
+    await this.chargePoint.beginTransactionForLab(idTag, connectorId);
+  }
+
+  async retryStopTransaction(): Promise<void> {
+    if (!this.chargePoint) {
+      throw new Error("Charge point is not connected");
+    }
+    await this.chargePoint.finishTransactionForLab();
+  }
+
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }): void {
+    this.chargePoint?.restoreTransactionState({
+      transactionId: state.transactionId,
+      idTag: state.idTag,
+      ...(state.connectorStatus
+        ? { connectorStatus: state.connectorStatus as ConnectorStatus }
+        : {}),
+    });
   }
 
   start(): void {

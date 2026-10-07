@@ -295,17 +295,19 @@ describe("Malformed response injection", () => {
 });
 
 describe("Duplicate Start/Stop idempotency", () => {
-  it("does not double-call CSMS for duplicate StartTransaction", async () => {
+  it("does not double-call CSMS for duplicate StartTransaction via beginTransactionForLab", async () => {
     const { left, right } = linkTransports();
     const csms = new OcppConnection(left);
     const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
 
     let startTxCount = 0;
+    let authorizeCount = 0;
     csms.onCall(async (call) => {
       if (call.action === Ocpp16Action.BootNotification) {
         return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
       }
       if (call.action === Ocpp16Action.Authorize) {
+        authorizeCount += 1;
         return { idTagInfo: { status: "Accepted" } };
       }
       if (call.action === Ocpp16Action.StartTransaction) {
@@ -317,14 +319,19 @@ describe("Duplicate Start/Stop idempotency", () => {
 
     await chargePoint.announce();
 
-    await csms.call(Ocpp16Action.RemoteStartTransaction, { connectorId: 1, idTag: "TAG001" });
-    await new Promise((r) => setTimeout(r, 100));
+    await chargePoint.beginTransactionForLab("TAG001");
     expect(startTxCount).toBe(1);
+    expect(chargePoint.getState().transactionId).toBe(12345);
+
+    await chargePoint.beginTransactionForLab("TAG001");
+    expect(startTxCount).toBe(1);
+    expect(authorizeCount).toBe(1);
+    expect(chargePoint.getState().transactionId).toBe(12345);
 
     chargePoint.close();
   });
 
-  it("does not double-call CSMS for duplicate StopTransaction", async () => {
+  it("does not double-call CSMS for duplicate StopTransaction after restoreTransactionState", async () => {
     const { left, right } = linkTransports();
     const csms = new OcppConnection(left);
     const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
@@ -349,12 +356,19 @@ describe("Duplicate Start/Stop idempotency", () => {
 
     await chargePoint.announce();
 
-    await csms.call(Ocpp16Action.RemoteStartTransaction, { connectorId: 1, idTag: "TAG001" });
-    await new Promise((r) => setTimeout(r, 100));
+    await chargePoint.beginTransactionForLab("TAG001");
     expect(chargePoint.getState().transactionId).toBe(12345);
 
-    await csms.call(Ocpp16Action.RemoteStopTransaction, { transactionId: 12345 });
-    await new Promise((r) => setTimeout(r, 100));
+    await chargePoint.finishTransactionForLab();
+    expect(stopTxCount).toBe(1);
+    expect(chargePoint.getState().transactionId).toBeNull();
+
+    chargePoint.restoreTransactionState({
+      transactionId: 12345,
+      idTag: "TAG001",
+      connectorStatus: "Charging",
+    });
+    await chargePoint.finishTransactionForLab();
     expect(stopTxCount).toBe(1);
     expect(chargePoint.getState().transactionId).toBeNull();
 

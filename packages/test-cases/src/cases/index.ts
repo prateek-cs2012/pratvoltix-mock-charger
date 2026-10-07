@@ -7,6 +7,8 @@ import { getConfigurationTimeoutCase } from "./get-configuration-timeout.case.js
 import { heartbeatCase } from "./heartbeat.case.js";
 import { localAuthSkipCase } from "./local-auth-skip.case.js";
 import { malformedResponseCase } from "./malformed-response.case.js";
+import { duplicateStartCase } from "./duplicate-start.case.js";
+import { duplicateStopCase } from "./duplicate-stop.case.js";
 import { offlineUploadCase } from "./offline-upload.case.js";
 import { outboundDelayCase } from "./outbound-delay.case.js";
 import { reconnectStormCase } from "./reconnect-storm.case.js";
@@ -35,4 +37,6 @@ export const cases = [
   outboundDelayCase,
   localAuthSkipCase,
   offlineUploadCase,
+  duplicateStartCase,
+  duplicateStopCase,
 ];

@@ -26,6 +26,9 @@ export const CONTROL_ACTIONS = [
   "get-local-auth-list",
   "upload-offline-transactions",
   "queue-offline-transaction",
+  "retry-start-transaction",
+  "retry-stop-transaction",
+  "restore-transaction-state",
 ] as const;
 
 export type ControlAction = (typeof CONTROL_ACTIONS)[number];

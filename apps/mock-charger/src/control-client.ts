@@ -48,6 +48,13 @@ export interface SimulatorControlClientOptions {
   getLocalAuthList?: () => LocalAuthEntry[];
   uploadOfflineTransactions?: () => Promise<number>;
   queueOfflineTransaction?: (tx: OfflineTransaction) => void;
+  retryStartTransaction?: (idTag: string, connectorId?: number) => Promise<void>;
+  retryStopTransaction?: () => Promise<void>;
+  restoreTransactionState?: (state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }) => void;
   openSocket?: (url: string) => ControlSocket;
   schedule?: (callback: () => void, delayMs: number) => { cancel(): void };
 }
@@ -230,6 +237,27 @@ export class SimulatorControlClient {
       const tx = readOfflineTransaction(request.payload);
       this.options.queueOfflineTransaction(tx);
       return { queued: true };
+    }
+    if (request.action === "retry-start-transaction") {
+      if (!this.options.retryStartTransaction) {
+        throw new ControlProtocolError("not-ready", "Retry start is not supported.");
+      }
+      const { idTag, connectorId } = readRetryStart(request.payload);
+      return this.options.retryStartTransaction(idTag, connectorId).then(() => ({ started: true }));
+    }
+    if (request.action === "retry-stop-transaction") {
+      if (!this.options.retryStopTransaction) {
+        throw new ControlProtocolError("not-ready", "Retry stop is not supported.");
+      }
+      return this.options.retryStopTransaction().then(() => ({ stopped: true }));
+    }
+    if (request.action === "restore-transaction-state") {
+      if (!this.options.restoreTransactionState) {
+        throw new ControlProtocolError("not-ready", "Restore transaction state is not supported.");
+      }
+      const state = readRestoreTransactionState(request.payload);
+      this.options.restoreTransactionState(state);
+      return { restored: true };
     }
     throw new ControlProtocolError("not-supported", `Unsupported simulator action ${request.action}.`);
   }
@@ -426,5 +454,47 @@ export function localSimulatorController(faults: FaultEngine) {
     async listFaults() {
       return faults.list();
     },
+  };
+}
+
+function readRetryStart(payload: unknown): { idTag: string; connectorId?: number } {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction requires idTag.");
+  }
+  const idTag = (payload as { idTag?: unknown }).idTag;
+  if (typeof idTag !== "string" || idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction requires idTag.");
+  }
+  const connectorId = (payload as { connectorId?: unknown }).connectorId;
+  if (connectorId !== undefined && (typeof connectorId !== "number" || !Number.isInteger(connectorId))) {
+    throw new ControlProtocolError("invalid-message", "retry-start-transaction connectorId must be an integer.");
+  }
+  return { idTag, ...(typeof connectorId === "number" ? { connectorId } : {}) };
+}
+
+function readRestoreTransactionState(payload: unknown): {
+  transactionId: number;
+  idTag: string;
+  connectorStatus?: string;
+} {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires transactionId and idTag.");
+  }
+  const transactionId = (payload as { transactionId?: unknown }).transactionId;
+  const idTag = (payload as { idTag?: unknown }).idTag;
+  if (typeof transactionId !== "number" || !Number.isInteger(transactionId)) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires transactionId.");
+  }
+  if (typeof idTag !== "string" || idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state requires idTag.");
+  }
+  const connectorStatus = (payload as { connectorStatus?: unknown }).connectorStatus;
+  if (connectorStatus !== undefined && typeof connectorStatus !== "string") {
+    throw new ControlProtocolError("invalid-message", "restore-transaction-state connectorStatus must be a string.");
+  }
+  return {
+    transactionId,
+    idTag,
+    ...(typeof connectorStatus === "string" ? { connectorStatus } : {}),
   };
 }

@@ -83,4 +83,11 @@ export interface ExtendedSimulatorController {
   getLocalAuthList(): Promise<LocalAuthEntry[]>;
   queueOfflineTransaction(tx: OfflineTransactionEntry): Promise<void>;
   uploadOfflineTransactions(): Promise<number>;
+  retryStartTransaction(idTag: string, connectorId?: number): Promise<void>;
+  retryStopTransaction(): Promise<void>;
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: string;
+  }): Promise<void>;
 }

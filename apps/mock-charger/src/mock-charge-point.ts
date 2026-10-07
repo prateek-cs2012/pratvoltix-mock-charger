@@ -137,6 +137,30 @@ export class MockChargePoint {
     return this.transactionId !== null;
   }
 
+  /** Lab helper: run the same Start path as RemoteStart follow-on (for idempotency tests). */
+  async beginTransactionForLab(idTag: string, connectorId?: number): Promise<void> {
+    await this.beginTransaction(idTag, connectorId ?? this.connectorId);
+  }
+
+  /** Lab helper: run the Stop path (for idempotency tests). */
+  async finishTransactionForLab(): Promise<void> {
+    await this.finishTransaction();
+  }
+
+  /**
+   * Lab helper: restore active transaction fields without clearing Start/Stop caches.
+   * Used to re-enter finishTransaction after a successful Stop cleared transactionId.
+   */
+  restoreTransactionState(state: {
+    transactionId: number;
+    idTag: string;
+    connectorStatus?: ConnectorStatus;
+  }): void {
+    this.transactionId = state.transactionId;
+    this.idTag = state.idTag;
+    this.connectorStatus = state.connectorStatus ?? "Charging";
+  }
+
   async announce(): Promise<void> {
     const boot = await this.connection.call<{ status?: string; interval?: number }>(Ocpp16Action.BootNotification, {
       chargePointVendor: this.options.vendor ?? "Pratvoltix",

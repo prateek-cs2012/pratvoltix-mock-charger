@@ -229,6 +229,21 @@ export class SimulatorRegistry {
     const session = this.requireConnected(identity);
     try {
       await session.channel.request("clear-all-faults", {});
+      try {
+        await session.channel.request("clear-reconnect-storm", {});
+      } catch {
+        // Older simulators may not support storm — ignore.
+      }
+      try {
+        await session.channel.request("clear-outbound-delay", {});
+      } catch {
+        // ignore
+      }
+      try {
+        await session.channel.request("reset-connector-idle", {});
+      } catch {
+        // ignore — prefer Available when supported
+      }
       const faults = await this.refreshFaults(session);
       if (faults.length > 0) {
         throw new ControlProtocolError("not-clean", `Simulator ${identity} still has ${faults.length} active faults.`);

@@ -29,6 +29,7 @@ export const CONTROL_ACTIONS = [
   "retry-start-transaction",
   "retry-stop-transaction",
   "restore-transaction-state",
+  "reset-connector-idle",
 ] as const;
 
 export type ControlAction = (typeof CONTROL_ACTIONS)[number];

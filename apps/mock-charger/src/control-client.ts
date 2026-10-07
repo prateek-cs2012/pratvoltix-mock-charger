@@ -42,6 +42,7 @@ export interface SimulatorControlClientOptions {
   emitOcpp?: (action: string, connectorId?: number) => Promise<{ status: "Accepted" }>;
   setReconnectStorm?: (config: ReconnectStormConfig | undefined) => void;
   getReconnectStorm?: () => ReconnectStormConfig | undefined;
+  resetToIdle?: () => Promise<void>;
   setOutboundDelay?: (delayMs: number) => void;
   getOutboundDelay?: () => number;
   setLocalAuthList?: (entries: LocalAuthEntry[]) => void;
@@ -133,7 +134,7 @@ export class SimulatorControlClient {
     }, delayMs);
   }
 
-  private handleRequest(request: ControlRequest): unknown {
+  private async handleRequest(request: ControlRequest): Promise<unknown> {
     try {
       return this.dispatch(request);
     } catch (error) {
@@ -250,6 +251,12 @@ export class SimulatorControlClient {
         throw new ControlProtocolError("not-ready", "Retry stop is not supported.");
       }
       return this.options.retryStopTransaction().then(() => ({ stopped: true }));
+    }
+    if (request.action === "reset-connector-idle") {
+      if (!this.options.resetToIdle) {
+        throw new ControlProtocolError("not-ready", "reset-connector-idle is not supported.");
+      }
+      return this.options.resetToIdle().then(() => ({ reset: true }));
     }
     if (request.action === "restore-transaction-state") {
       if (!this.options.restoreTransactionState) {

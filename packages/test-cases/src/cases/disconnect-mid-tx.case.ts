@@ -9,7 +9,8 @@ import { withFault } from "../with-fault.js";
 export const disconnectMidTxCase = defineTestCase<OcppTestContext>({
   id: "disconnect-mid-tx",
   title: "Disconnect mid-transaction recovery",
-  description: "Starts a transaction, disconnects the charge point mid-transaction via fault injection, then verifies that after reconnect the charge point restores the correct connector status (Charging), retains the transaction ID, and can complete the transaction with StopTransaction correlating to the pre-disconnect transaction.",
+  description:
+    "Starts a transaction, disconnects the charge point mid-transaction via fault injection, then verifies that after reconnect the charge point restores the correct connector status (Charging), retains the transaction ID, and can complete the transaction with StopTransaction correlating to the pre-disconnect transaction.",
   version: "1.6",
   tags: ["transaction", "reconnect", "fault-injection"],
   requirements: [SIMULATOR_CAPABILITY],
@@ -38,35 +39,45 @@ export const disconnectMidTxCase = defineTestCase<OcppTestContext>({
     started.reply({ transactionId, idTagInfo: { status: "Accepted" } });
     ctx.log(`Transaction ${transactionId} started at ${meterStart} Wh`);
 
-    await ctx.peer.waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (payload) => {
-      return payload["status"] === "Charging";
-    }).then((call) => call.reply({}));
+    await ctx.peer
+      .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (payload) => {
+        return payload["status"] === "Charging";
+      })
+      .then((call) => call.reply({}));
     ctx.log("Charge point is now Charging");
 
-    ctx.log("Injecting disconnect fault to simulate mid-tx socket drop");
+    // Arm disconnect on inbound TriggerMessage (Heartbeat is CP→CSMS outbound and never hits handleCall).
+    // Register Boot waiter BEFORE the drop so the live peer can catch the post-reconnect Boot.
+    ctx.log("Injecting disconnect fault on next TriggerMessage");
+    const bootPromise = ctx.peer.waitFor(Ocpp16Action.BootNotification, eventTimeoutMs * 2);
     await withFault(
       simulator,
       {
         id: "mid-tx-disconnect",
         consume: "once",
-        match: { action: Ocpp16Action.Heartbeat, occurrence: 1 },
+        match: { action: Ocpp16Action.TriggerMessage, occurrence: 1 },
         effect: { type: "disconnect" },
       },
       async () => {
-        await ctx.peer.call(Ocpp16Action.TriggerMessage, { requestedMessage: Ocpp16Action.Heartbeat }, callTimeoutMs).catch(() => undefined);
-        await waitFor(500);
+        await ctx.peer
+          .call(Ocpp16Action.TriggerMessage, { requestedMessage: Ocpp16Action.Heartbeat }, callTimeoutMs)
+          .catch(() => undefined);
+        await waitFor(200);
       },
     );
-    ctx.log("Disconnect fault triggered, waiting for reconnect...");
+    ctx.log("Disconnect fault triggered, waiting for reconnect Boot...");
 
-    const bootPromise = ctx.peer.waitFor(Ocpp16Action.BootNotification, eventTimeoutMs * 2);
     const boot = await bootPromise;
     boot.reply({ status: "Accepted", currentTime: new Date().toISOString(), interval: 300 });
     ctx.log("Charge point reconnected and sent BootNotification");
 
     const statusAfterReconnect = await ctx.peer.waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs);
     const restoredStatus = readString(statusAfterReconnect.payload, "status");
-    assertEqual(restoredStatus, "Charging", "Connector status after reconnect should be Charging (restored from persisted state)");
+    assertEqual(
+      restoredStatus,
+      "Charging",
+      "Connector status after reconnect should be Charging (restored from persisted state)",
+    );
     statusAfterReconnect.reply({});
     ctx.log("Confirmed connector status restored to Charging after reconnect");
 

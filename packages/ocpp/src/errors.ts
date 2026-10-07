@@ -48,3 +48,10 @@ export class OcppResponseError extends OcppError {
     this.details = details;
   }
 }
+
+export class OcppConnectionClosedError extends Error {
+  constructor(message = "OCPP connection closed") {
+    super(message);
+    this.name = "OcppConnectionClosedError";
+  }
+}

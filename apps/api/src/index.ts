@@ -27,6 +27,17 @@ process.on("SIGTERM", () => {
   void shutdown();
 });
 
+// OCPP socket close rejects in-flight waitFor/call promises. Cases (and the live peer)
+// handle that; this guard keeps a stray rejection from killing the lab API mid-run.
+process.on("unhandledRejection", (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (message === "OCPP connection closed" || (reason instanceof Error && reason.name === "OcppConnectionClosedError")) {
+    console.warn(`[ocpp] ignored unhandled rejection: ${message}`);
+    return;
+  }
+  console.error("[api] unhandledRejection", reason);
+});
+
 await mongoose.connect(config.mongodbUri);
 server.listen(config.port, () => {
   console.log(`Pratvoltix API listening on ${config.port}`);

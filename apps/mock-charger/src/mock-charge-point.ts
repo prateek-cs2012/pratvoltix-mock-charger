@@ -161,6 +161,22 @@ export class MockChargePoint {
     this.connectorStatus = state.connectorStatus ?? "Charging";
   }
 
+  /** Lab cleanup: drop any active tx and mark Available without CSMS round-trips. */
+  resetToIdle(): void {
+    this.transactionId = null;
+    this.idTag = null;
+    this.connectorStatus = "Available";
+    this.lastStopTxId = null;
+    this.lastStopTxResponse = null;
+    this.setOutboundDelay(0);
+  }
+
+  /** Best-effort StatusNotification Available for CSMS/lab peer visibility. */
+  async notifyAvailable(): Promise<void> {
+    this.connectorStatus = "Available";
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
+  }
+
   async announce(): Promise<void> {
     const boot = await this.connection.call<{ status?: string; interval?: number }>(Ocpp16Action.BootNotification, {
       chargePointVendor: this.options.vendor ?? "Pratvoltix",

@@ -7,6 +7,7 @@ import { executeExternalRun } from "./external-run.js";
 import { ExternalOcppSession, type MirroredFrame } from "./external-peer.js";
 import { TestRunModel, type TestRunRecord } from "./models/test-run.js";
 import type { SessionRegistry } from "./ocpp/registry.js";
+import { createLivePeer } from "./ocpp/live-peer.js";
 import type { SimulatorRegistry } from "./simulator/registry.js";
 import { RunTraceCollector } from "./trace-collector.js";
 import { presentTraceSummary } from "./trace-query.js";
@@ -118,7 +119,7 @@ export async function executeRun(
       cases: testCases,
       createContext: (helpers) => ({
         ...helpers,
-        peer: session.connection,
+        peer: createLivePeer(registry, identity),
         chargePointId: identity,
         profile,
         ...(simulator ? { simulator } : {}),
@@ -129,8 +130,15 @@ export async function executeRun(
         onCaseStart(step) {
           collector.setActiveCase(step.id);
         },
-        onCaseFinish() {
+        async onCaseFinish() {
           collector.setActiveCase(undefined);
+          if (needsSimulator) {
+            try {
+              await simulators?.ensureClean(identity);
+            } catch (error) {
+              console.warn(`[run] post-case cleanup for ${identity}:`, error);
+            }
+          }
         },
       },
     });

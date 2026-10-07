@@ -49,6 +49,7 @@ export class OcppSession {
       this.stormBurstRemaining = config.burstCount;
     } else {
       this.stormBurstRemaining = 0;
+      this.clearReconnect();
     }
   }
 
@@ -74,6 +75,26 @@ export class OcppSession {
 
   getLocalAuthList(): LocalAuthEntry[] {
     return this.chargePoint?.getLocalAuthList() ?? [];
+  }
+
+  /** Clear active tx + force Available (and persist) so the next catalog case starts clean. */
+  async resetToIdle(): Promise<void> {
+    this.chargePoint?.resetToIdle();
+    if (this.chargePoint) {
+      this.persistedState = this.chargePoint.getState();
+      try {
+        await this.chargePoint.notifyAvailable();
+      } catch {
+        // Socket may be down; persisted Available is enough for the next announce.
+      }
+    } else if (this.persistedState) {
+      this.persistedState = {
+        ...this.persistedState,
+        transactionId: null,
+        idTag: null,
+        connectorStatus: "Available",
+      };
+    }
   }
 
   async uploadOfflineTransactions(): Promise<number> {
@@ -290,6 +311,7 @@ export class OcppSession {
       () => {
         if (generation === this.generation) {
           this.options.log?.(`${this.options.identity} accepted by CSMS`);
+          this.continueStormIfNeeded(generation);
         }
       },
       (error: unknown) => {
@@ -330,22 +352,51 @@ export class OcppSession {
     if (this.stopped || this.reconnectTimer || this.holdingExternal) {
       return;
     }
-    let delayMs = 2_000;
-    if (this.reconnectStorm) {
-      if (this.stormBurstRemaining > 0) {
-        delayMs = this.reconnectStorm.burstDelayMs;
-        this.stormBurstRemaining -= 1;
-      } else {
-        delayMs = this.reconnectStorm.intervalMs;
-        this.stormBurstRemaining = this.reconnectStorm.burstCount;
-      }
-    }
+    const delayMs = this.reconnectStorm ? this.reconnectStorm.burstDelayMs : 2_000;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
         this.logIssue(error);
       });
     }, delayMs);
+  }
+
+  /** After a successful Boot/announce, keep dropping while storm slots remain. */
+  private continueStormIfNeeded(generation: number): void {
+    if (!this.reconnectStorm || this.stopped || generation !== this.generation) {
+      return;
+    }
+    if (this.stormBurstRemaining > 0) {
+      this.stormBurstRemaining -= 1;
+    }
+    if (this.stormBurstRemaining > 0) {
+      const delayMs = this.reconnectStorm.burstDelayMs;
+      this.clearReconnect();
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = undefined;
+        if (!this.reconnectStorm || generation !== this.generation) {
+          return;
+        }
+        this.options.log?.(`${this.options.identity} storm drop (${this.stormBurstRemaining} remaining)`);
+        try {
+          this.socket?.close();
+        } catch {
+          // ignore
+        }
+      }, delayMs);
+      return;
+    }
+    // Burst exhausted — pause then start another burst until clearReconnectStorm.
+    const intervalMs = this.reconnectStorm.intervalMs;
+    this.clearReconnect();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.reconnectStorm || generation !== this.generation) {
+        return;
+      }
+      this.stormBurstRemaining = this.reconnectStorm.burstCount;
+      this.continueStormIfNeeded(generation);
+    }, intervalMs);
   }
 
   private clearReconnect(): void {

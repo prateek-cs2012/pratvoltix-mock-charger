@@ -47,7 +47,7 @@ import { StatusPillComponent } from "./status-pill.component";
       @if (lab.targetMode() === "external") {
         <label>
           Target URL
-          <input [value]="lab.targetUrl()" (input)="chooseTargetUrl($event)" placeholder="ws://host.docker.internal:9101/independent/{stationId}" />
+          <input [value]="lab.targetUrl()" (input)="chooseTargetUrl($event)" placeholder="ws://host.docker.internal:8080/ocpp/{stationId}" />
         </label>
         @if (targetError(); as problem) {
           <p class="error">{{ problem }}</p>

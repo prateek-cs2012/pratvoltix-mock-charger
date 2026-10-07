@@ -25,9 +25,9 @@ pnpm deploy
 
 That rebuilds the API, web, and mock-charger images and restarts the stack in the background. `docker compose up --build` does the same in the foreground.
 
-- Lab UI: http://localhost:4200
-- API: http://localhost:8080
-- Charge point URL: `ws://localhost:4200/ocpp/CP001` (subprotocol `ocpp1.6`)
+- Lab UI: http://localhost:14200
+- API: http://localhost:18080
+- Charge point URL: `ws://localhost:14200/ocpp/CP001` (subprotocol `ocpp1.6`)
 - MongoDB: `mongodb://localhost:27017/pratvoltix`
 
 The mock charger connects as `CP001` on OCPP and, separately, on the lab-control channel. From the host:
@@ -54,4 +54,4 @@ pnpm dev:web
 pnpm dev:mock
 ```
 
-Copy `.env.example` if you want different ports or a remote MongoDB. `dev:web` proxies `/api`, `/health`, and `/ocpp` to `http://localhost:8080`.
+Copy `.env.example` if you want different ports or a remote MongoDB. Host ports default to **18080** (API) and **14200** (web) so they do not clash with the CSMS gateway (8080) and CSMS web (4200). `dev:web` proxies `/api`, `/health`, and `/ocpp` to `http://localhost:18080`. Set `TARGET_CSMS_URL=ws://host.docker.internal:8080/ocpp/{stationId}` (or `localhost` from the host) when targeting the real CSMS gateway.

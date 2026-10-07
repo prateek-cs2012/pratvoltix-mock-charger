@@ -129,7 +129,7 @@ pnpm lab -- runs show <run-id>
 pnpm lab -- runs trace <run-id>
 ```
 
-`--api-url` defaults to `http://localhost:8080`. `--json` prints JSON. `--wait` polls once a second for up to 120 seconds. `runs trace` prints the stored OCPP transcript for one run. Filters and storage limits are described in [tracing.md](tracing.md).
+`--api-url` defaults to `http://localhost:8080` (use `http://localhost:18080` against the Docker lab host mapping). `--json` prints JSON. `--wait` polls once a second for up to 120 seconds. `runs trace` prints the stored OCPP transcript for one run. Filters and storage limits are described in [tracing.md](tracing.md).
 
 Exit codes: `0` when the command succeeds and a waited run passes, `1` when a run fails or the command or API request fails, `2` when a run ends in error, `3` when waiting times out.
 

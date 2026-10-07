@@ -122,7 +122,7 @@ The OCPP station registry and the simulator registry are separate. A station can
 | Variable | Role |
 | --- | --- |
 | `CSMS_URL` | Legacy bootstrap OCPP base URL for the mock charger, for example `ws://api:8080/ocpp`. A per-run external target does not change this idle connection. |
-| `TARGET_CSMS_URL` | External OCPP URL template read by the API process. Example: `ws://host.docker.internal:9101/independent/{stationId}`. Precedence is the per-run request, then this variable, then the embedded default. Put secrets here. Do not pass them with `--target-url`: package managers and process listings can echo raw arguments. |
+| `TARGET_CSMS_URL` | External OCPP URL template read by the API process. Example: `ws://host.docker.internal:8080/ocpp/{stationId}` (CSMS websocket-gateway). Precedence is the per-run request, then this variable, then the embedded default. Put secrets here. Do not pass them with `--target-url`: package managers and process listings can echo raw arguments. |
 | `CONTROL_URL` | Control endpoint, for example `ws://api:8080/lab-control` |
 | `CHARGE_POINT_ID` | Identity used for both channels |
 | `SIMULATOR_NAME` | Name sent in hello |

@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "ng serve --port 4200",
+    "dev": "ng serve --port 14200",
     "build": "ng build",
-    "start": "ng serve --port 4200",
+    "start": "ng serve --port 14200",
     "test": "ng test --watch=false"
   },
   "dependencies": {

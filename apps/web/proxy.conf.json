@@ -1,14 +1,14 @@
 {
   "/api": {
-    "target": "http://localhost:8080",
+    "target": "http://localhost:18080",
     "secure": false
   },
   "/health": {
-    "target": "http://localhost:8080",
+    "target": "http://localhost:18080",
     "secure": false
   },
   "/ocpp": {
-    "target": "http://localhost:8080",
+    "target": "http://localhost:18080",
     "secure": false,
     "ws": true
   }

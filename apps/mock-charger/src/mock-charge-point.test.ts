@@ -172,6 +172,153 @@ describe("ChargePointState persistence", () => {
 });
 
 
+
+describe("CSMS action stubs (Gap 9)", () => {
+  async function boot(csms: OcppConnection, chargePoint: MockChargePoint) {
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (
+        call.action === Ocpp16Action.StatusNotification ||
+        call.action === Ocpp16Action.FirmwareStatusNotification ||
+        call.action === Ocpp16Action.DiagnosticsStatusNotification
+      ) {
+        return {};
+      }
+      return {};
+    });
+    await chargePoint.announce();
+  }
+
+  it("ChangeAvailability Inoperative → Unavailable, Operative → Available", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    const statuses: string[] = [];
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.StatusNotification) {
+        statuses.push(String(call.payload["status"]));
+        return {};
+      }
+      return {};
+    });
+    await chargePoint.announce();
+
+    const inop = await csms.call<{ status: string }>(Ocpp16Action.ChangeAvailability, {
+      connectorId: 1,
+      type: "Inoperative",
+    });
+    expect(inop.status).toBe("Accepted");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(statuses).toContain("Unavailable");
+
+    const op = await csms.call<{ status: string }>(Ocpp16Action.ChangeAvailability, {
+      connectorId: 1,
+      type: "Operative",
+    });
+    expect(op.status).toBe("Accepted");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(statuses).toContain("Available");
+    chargePoint.close();
+  });
+
+  it("ReserveNow / CancelReservation round-trip", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    await boot(csms, chargePoint);
+
+    const reserved = await csms.call<{ status: string }>(Ocpp16Action.ReserveNow, {
+      connectorId: 1,
+      expiryDate: new Date(Date.now() + 3600_000).toISOString(),
+      idTag: "TAG1",
+      reservationId: 9,
+    });
+    expect(reserved.status).toBe("Accepted");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(chargePoint.getState().connectorStatus).toBe("Reserved");
+
+    const cancelled = await csms.call<{ status: string }>(Ocpp16Action.CancelReservation, { reservationId: 9 });
+    expect(cancelled.status).toBe("Accepted");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(chargePoint.getState().connectorStatus).toBe("Available");
+    chargePoint.close();
+  });
+
+  it("SetChargingProfile / GetCompositeSchedule / ClearChargingProfile", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    await boot(csms, chargePoint);
+
+    const set = await csms.call<{ status: string }>(Ocpp16Action.SetChargingProfile, {
+      connectorId: 1,
+      csChargingProfiles: {
+        chargingProfileId: 1,
+        stackLevel: 0,
+        chargingProfilePurpose: "TxDefaultProfile",
+        chargingProfileKind: "Absolute",
+        chargingSchedule: { chargingRateUnit: "A", chargingSchedulePeriod: [{ startPeriod: 0, limit: 10 }] },
+      },
+    });
+    expect(set.status).toBe("Accepted");
+
+    const schedule = await csms.call<{ status: string }>(Ocpp16Action.GetCompositeSchedule, {
+      connectorId: 1,
+      duration: 300,
+    });
+    expect(schedule.status).toBe("Accepted");
+
+    const cleared = await csms.call<{ status: string }>(Ocpp16Action.ClearChargingProfile, {
+      chargingProfilePurpose: "TxDefaultProfile",
+    });
+    expect(cleared.status).toBe("Accepted");
+    chargePoint.close();
+  });
+
+  it("UpdateFirmware and GetDiagnostics emit status notifications", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    const fw: string[] = [];
+    const diag: string[] = [];
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.FirmwareStatusNotification) {
+        fw.push(String(call.payload["status"]));
+        return {};
+      }
+      if (call.action === Ocpp16Action.DiagnosticsStatusNotification) {
+        diag.push(String(call.payload["status"]));
+        return {};
+      }
+      return {};
+    });
+    await chargePoint.announce();
+
+    await csms.call(Ocpp16Action.UpdateFirmware, {
+      location: "https://example.invalid/fw.bin",
+      retrieveDate: new Date().toISOString(),
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(fw).toEqual(["Downloading", "Downloaded", "Installing", "Installed"]);
+
+    const result = await csms.call<{ fileName?: string }>(Ocpp16Action.GetDiagnostics, {
+      location: "ftp://example.invalid/diag/",
+    });
+    expect(result.fileName).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(diag).toEqual(["Uploading", "Uploaded"]);
+    chargePoint.close();
+  });
+});
+
 describe("local cable start / stop (Gap 8)", () => {
   it("localStart emits Preparing then Charging with Authorize+StartTransaction", async () => {
     const { left, right } = linkTransports();

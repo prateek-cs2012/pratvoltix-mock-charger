@@ -18,81 +18,73 @@ export const localCableStartCase = defineTestCase<OcppTestContext>({
     const extended = requireExtendedSimulator(ctx);
     const { connectorId, idTag, transactionId, eventTimeoutMs } = ctx.profile.parameters;
 
-    const preparingPromise = ctx.peer.waitFor(
-      Ocpp16Action.StatusNotification,
-      eventTimeoutMs,
-      (p) => readString(p, "status") === "Preparing",
-    );
-    const authorizePromise = ctx.peer.waitFor(Ocpp16Action.Authorize, eventTimeoutMs);
-    const startPromise = ctx.peer.waitFor(Ocpp16Action.StartTransaction, eventTimeoutMs);
-    const chargingPromise = ctx.peer.waitFor(
-      Ocpp16Action.StatusNotification,
-      eventTimeoutMs,
-      (p) => readString(p, "status") === "Charging",
-    );
+    let meterStart = 0;
 
-    ctx.log("Triggering local cable start");
-    await extended.localStart(idTag, connectorId);
+    ctx.log("Triggering local cable start (control + peer replies in parallel)");
+    await Promise.all([
+      extended.localStart(idTag, connectorId),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Preparing")
+        .then((c) => {
+          c.reply({});
+          ctx.log("Preparing observed");
+        }),
+      ctx.peer.waitFor(Ocpp16Action.Authorize, eventTimeoutMs).then((c) => {
+        c.reply({ idTagInfo: { status: "Accepted" } });
+      }),
+      ctx.peer.waitFor(Ocpp16Action.StartTransaction, eventTimeoutMs).then((c) => {
+        const ms = readNumber(c.payload, "meterStart");
+        assertDefined(ms, "meterStart is required");
+        meterStart = ms;
+        c.reply({ transactionId, idTagInfo: { status: "Accepted" } });
+      }),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Charging")
+        .then((c) => {
+          c.reply({});
+          ctx.log("Charging after local start");
+        }),
+    ]);
 
-    const preparing = await preparingPromise;
-    preparing.reply({});
-    ctx.log("Preparing observed");
+    ctx.log("Injecting SuspendedEVSE mid-tx");
+    await Promise.all([
+      extended.setConnectorStatus("SuspendedEVSE"),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "SuspendedEVSE")
+        .then((c) => c.reply({})),
+    ]);
 
-    const authorize = await authorizePromise;
-    authorize.reply({ idTagInfo: { status: "Accepted" } });
+    await Promise.all([
+      extended.setConnectorStatus("Charging"),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Charging")
+        .then((c) => c.reply({})),
+    ]);
 
-    const started = await startPromise;
-    const meterStart = readNumber(started.payload, "meterStart");
-    assertDefined(meterStart, "meterStart is required");
-    started.reply({ transactionId, idTagInfo: { status: "Accepted" } });
+    let stopReason: string | undefined;
+    let meterStop = 0;
 
-    const charging = await chargingPromise;
-    charging.reply({});
-    ctx.log("Charging after local start");
+    ctx.log("Triggering local stop with reason=Local (control + peer replies in parallel)");
+    await Promise.all([
+      extended.localStop("Local"),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Finishing")
+        .then((c) => c.reply({})),
+      ctx.peer.waitFor(Ocpp16Action.StopTransaction, eventTimeoutMs).then((c) => {
+        assertEqual(readNumber(c.payload, "transactionId"), transactionId, "Stop transactionId");
+        stopReason = readString(c.payload, "reason");
+        const ms = readNumber(c.payload, "meterStop");
+        assertDefined(ms, "meterStop");
+        meterStop = ms;
+        c.reply({ idTagInfo: { status: "Accepted" } });
+      }),
+      ctx.peer
+        .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Available")
+        .then((c) => c.reply({})),
+    ]);
 
-    const suspendedPromise = ctx.peer.waitFor(
-      Ocpp16Action.StatusNotification,
-      eventTimeoutMs,
-      (p) => readString(p, "status") === "SuspendedEVSE",
-    );
-    await extended.setConnectorStatus("SuspendedEVSE");
-    const suspended = await suspendedPromise;
-    suspended.reply({});
-    ctx.log("SuspendedEVSE injected");
-
-    await extended.setConnectorStatus("Charging");
-    await ctx.peer
-      .waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Charging")
-      .then((c) => c.reply({}));
-
-    const finishingPromise = ctx.peer.waitFor(
-      Ocpp16Action.StatusNotification,
-      eventTimeoutMs,
-      (p) => readString(p, "status") === "Finishing",
-    );
-    const stopPromise = ctx.peer.waitFor(Ocpp16Action.StopTransaction, eventTimeoutMs);
-    const availablePromise = ctx.peer.waitFor(
-      Ocpp16Action.StatusNotification,
-      eventTimeoutMs,
-      (p) => readString(p, "status") === "Available",
-    );
-
-    ctx.log("Triggering local stop with reason=Local");
-    await extended.localStop("Local");
-
-    const finishing = await finishingPromise;
-    finishing.reply({});
-
-    const stopped = await stopPromise;
-    assertEqual(readNumber(stopped.payload, "transactionId"), transactionId, "Stop transactionId");
-    assertEqual(readString(stopped.payload, "reason"), "Local", "StopTransaction.reason should be Local");
-    const meterStop = readNumber(stopped.payload, "meterStop");
-    assertDefined(meterStop, "meterStop");
+    assertEqual(stopReason, "Local", "StopTransaction.reason should be Local");
     assert(meterStop >= meterStart, "meterStop >= meterStart");
-    stopped.reply({ idTagInfo: { status: "Accepted" } });
-
-    const available = await availablePromise;
-    available.reply({});
     ctx.log("Local cable start/stop path complete");
   },
 });

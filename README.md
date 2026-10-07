@@ -13,7 +13,7 @@ TypeScript monorepo for exercising OCPP 1.6 charge points. The Angular app is a 
 - `packages/test-cases` — cases, scenarios, suites, validation, and selection
 - `packages/test-reporting` — JUnit, NDJSON, summaries, and artifact manifests
 
-How to add and run catalog content is in [docs/catalog.md](docs/catalog.md). How a run records OCPP frames is in [docs/tracing.md](docs/tracing.md). How the mock charger accepts fault injection is in [docs/simulator-control.md](docs/simulator-control.md). How run inputs are supplied is in [docs/profiles.md](docs/profiles.md). How CI exports JUnit and trace artifacts is in [docs/ci.md](docs/ci.md).
+What the mock charger supports end-to-end (Gaps 1–10) is in [docs/supported-features.md](docs/supported-features.md). How to add and run catalog content is in [docs/catalog.md](docs/catalog.md). How a run records OCPP frames is in [docs/tracing.md](docs/tracing.md). How the mock charger accepts fault injection is in [docs/simulator-control.md](docs/simulator-control.md). How run inputs are supplied is in [docs/profiles.md](docs/profiles.md). How CI exports JUnit and trace artifacts is in [docs/ci.md](docs/ci.md).
 
 OCPP 1.6 and 2.0.1 share the same CALL / CALLRESULT / CALLERROR framing. The executable catalog and mock station speak 1.6. The protocol package also exports the 2.0.1 action names.
 

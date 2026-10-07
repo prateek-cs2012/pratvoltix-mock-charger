@@ -6,6 +6,7 @@ import { disconnectMidTxCase } from "./disconnect-mid-tx.case.js";
 import { getConfigurationTimeoutCase } from "./get-configuration-timeout.case.js";
 import { heartbeatCase } from "./heartbeat.case.js";
 import { localAuthSkipCase } from "./local-auth-skip.case.js";
+import { localCableStartCase } from "./local-cable-start.case.js";
 import { malformedResponseCase } from "./malformed-response.case.js";
 import { duplicateStartCase } from "./duplicate-start.case.js";
 import { duplicateStopCase } from "./duplicate-stop.case.js";
@@ -36,6 +37,7 @@ export const cases = [
   malformedResponseCase,
   outboundDelayCase,
   localAuthSkipCase,
+  localCableStartCase,
   offlineUploadCase,
   duplicateStartCase,
   duplicateStopCase,

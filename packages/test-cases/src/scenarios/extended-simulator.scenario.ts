@@ -8,5 +8,5 @@ export const extendedSimulatorScenario = defineScenario({
   version: "1.6",
   tags: ["simulator", "extended"],
   requirements: [SIMULATOR_CAPABILITY],
-  caseIds: ["outbound-delay", "local-auth-skip", "offline-upload"],
+  caseIds: ["outbound-delay", "local-auth-skip", "offline-upload", "local-cable-start"],
 });

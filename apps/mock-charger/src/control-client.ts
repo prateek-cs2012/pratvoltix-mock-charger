@@ -43,6 +43,9 @@ export interface SimulatorControlClientOptions {
   setReconnectStorm?: (config: ReconnectStormConfig | undefined) => void;
   getReconnectStorm?: () => ReconnectStormConfig | undefined;
   resetToIdle?: () => Promise<void>;
+  localStart?: (idTag: string, connectorId?: number) => Promise<void>;
+  localStop?: (reason?: string) => Promise<void>;
+  setConnectorStatus?: (status: string, errorCode?: string) => Promise<void>;
   setOutboundDelay?: (delayMs: number) => void;
   getOutboundDelay?: () => number;
   setLocalAuthList?: (entries: LocalAuthEntry[]) => void;
@@ -251,6 +254,27 @@ export class SimulatorControlClient {
         throw new ControlProtocolError("not-ready", "Retry stop is not supported.");
       }
       return this.options.retryStopTransaction().then(() => ({ stopped: true }));
+    }
+    if (request.action === "local-start") {
+      if (!this.options.localStart) {
+        throw new ControlProtocolError("not-ready", "local-start is not supported.");
+      }
+      const { idTag, connectorId } = readRetryStart(request.payload);
+      return this.options.localStart(idTag, connectorId).then(() => ({ started: true }));
+    }
+    if (request.action === "local-stop") {
+      if (!this.options.localStop) {
+        throw new ControlProtocolError("not-ready", "local-stop is not supported.");
+      }
+      const reason = readStopReason(request.payload);
+      return this.options.localStop(reason).then(() => ({ stopped: true, reason }));
+    }
+    if (request.action === "set-connector-status") {
+      if (!this.options.setConnectorStatus) {
+        throw new ControlProtocolError("not-ready", "set-connector-status is not supported.");
+      }
+      const { status, errorCode } = readConnectorStatus(request.payload);
+      return this.options.setConnectorStatus(status, errorCode).then(() => ({ status, errorCode: errorCode ?? "NoError" }));
     }
     if (request.action === "reset-connector-idle") {
       if (!this.options.resetToIdle) {
@@ -503,5 +527,31 @@ function readRestoreTransactionState(payload: unknown): {
     transactionId,
     idTag,
     ...(typeof connectorStatus === "string" ? { connectorStatus } : {}),
+  };
+}
+
+function readStopReason(payload: unknown): string {
+  if (payload === undefined || payload === null || (typeof payload === "object" && !("reason" in (payload as object)))) {
+    return "Local";
+  }
+  const reason = (payload as { reason?: unknown }).reason;
+  if (typeof reason !== "string" || reason.length === 0) {
+    throw new ControlProtocolError("invalid-message", "local-stop reason must be a non-empty string.");
+  }
+  return reason;
+}
+
+function readConnectorStatus(payload: unknown): { status: string; errorCode?: string } {
+  if (typeof payload !== "object" || payload === null || typeof (payload as { status?: unknown }).status !== "string") {
+    throw new ControlProtocolError("invalid-message", "set-connector-status requires status.");
+  }
+  const status = (payload as { status: string }).status;
+  const errorCode = (payload as { errorCode?: unknown }).errorCode;
+  if (errorCode !== undefined && typeof errorCode !== "string") {
+    throw new ControlProtocolError("invalid-message", "set-connector-status errorCode must be a string.");
+  }
+  return {
+    status,
+    ...(typeof errorCode === "string" ? { errorCode } : {}),
   };
 }

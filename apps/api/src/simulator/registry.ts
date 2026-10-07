@@ -184,6 +184,27 @@ export class SimulatorRegistry {
         await session.channel.request("restore-transaction-state", state);
         session.lastSeenAt = new Date().toISOString();
       },
+      localStart: async (idTag: string, connectorId?: number) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("local-start", {
+          idTag,
+          ...(connectorId !== undefined ? { connectorId } : {}),
+        });
+        session.lastSeenAt = new Date().toISOString();
+      },
+      localStop: async (reason?: string) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("local-stop", reason ? { reason } : {});
+        session.lastSeenAt = new Date().toISOString();
+      },
+      setConnectorStatus: async (status: string, errorCode?: string) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("set-connector-status", {
+          status,
+          ...(errorCode !== undefined ? { errorCode } : {}),
+        });
+        session.lastSeenAt = new Date().toISOString();
+      },
     };
   }
 

@@ -2,7 +2,7 @@ import { OcppConnection, transportFromWebSocket } from "@pratvoltix/ocpp";
 import { ControlProtocolError, sanitizeCsmsUrl, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
-import { MockChargePoint, type ChargePointState } from "./mock-charge-point.js";
+import { MockChargePoint, type ChargePointState, type LocalAuthEntry, type OfflineTransaction } from "./mock-charge-point.js";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 
@@ -58,6 +58,30 @@ export class OcppSession {
 
   getPersistedState(): ChargePointState | undefined {
     return this.persistedState;
+  }
+
+  setOutboundDelay(delayMs: number): void {
+    this.chargePoint?.setOutboundDelay(delayMs);
+  }
+
+  getOutboundDelay(): number {
+    return this.chargePoint?.getOutboundDelay() ?? 0;
+  }
+
+  setLocalAuthList(entries: LocalAuthEntry[]): void {
+    this.chargePoint?.setLocalAuthList(entries);
+  }
+
+  getLocalAuthList(): LocalAuthEntry[] {
+    return this.chargePoint?.getLocalAuthList() ?? [];
+  }
+
+  async uploadOfflineTransactions(): Promise<number> {
+    return this.chargePoint?.uploadOfflineTransactions() ?? 0;
+  }
+
+  queueOfflineTransaction(tx: OfflineTransaction): void {
+    this.chargePoint?.queueOfflineTransaction(tx);
   }
 
   start(): void {
@@ -222,7 +246,16 @@ export class OcppSession {
         initialState: this.persistedState,
       },
       this.options.faults,
-      { disconnectOcpp: () => socket.close() },
+      {
+        disconnectOcpp: () => socket.close(),
+        sendRawOcpp: (data: string) => {
+          try {
+            socket.send(data);
+          } catch {
+            // Socket may be closed
+          }
+        },
+      },
     );
     this.chargePoint = chargePoint;
     void chargePoint.announce().then(

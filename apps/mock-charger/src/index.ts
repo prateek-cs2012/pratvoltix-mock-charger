@@ -34,6 +34,12 @@ const control = new SimulatorControlClient({
   emitOcpp: (action, connectorId) => session.emit(action, connectorId),
   setReconnectStorm: (config) => session.setReconnectStorm(config),
   getReconnectStorm: () => session.getReconnectStorm(),
+  setOutboundDelay: (delayMs) => session.setOutboundDelay(delayMs),
+  getOutboundDelay: () => session.getOutboundDelay(),
+  setLocalAuthList: (entries) => session.setLocalAuthList(entries),
+  getLocalAuthList: () => session.getLocalAuthList(),
+  uploadOfflineTransactions: () => session.uploadOfflineTransactions(),
+  queueOfflineTransaction: (tx) => session.queueOfflineTransaction(tx),
 });
 notifyControl = (action, payload) => control.notify(action, payload);
 

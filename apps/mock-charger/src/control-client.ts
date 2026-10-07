@@ -3,6 +3,7 @@ import {
   CONTROL_SUBPROTOCOL,
   ControlChannel,
   ControlProtocolError,
+  MAX_DELAY_MS,
   SIMULATOR_CAPABILITY,
   validateFaultRule,
   validateReconnectStormConfig,
@@ -11,6 +12,7 @@ import {
 } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
+import type { LocalAuthEntry, OfflineTransaction } from "./mock-charge-point.js";
 
 const BASE_BACKOFF_MS = 200;
 const MAX_BACKOFF_MS = 5_000;
@@ -40,6 +42,12 @@ export interface SimulatorControlClientOptions {
   emitOcpp?: (action: string, connectorId?: number) => Promise<{ status: "Accepted" }>;
   setReconnectStorm?: (config: ReconnectStormConfig | undefined) => void;
   getReconnectStorm?: () => ReconnectStormConfig | undefined;
+  setOutboundDelay?: (delayMs: number) => void;
+  getOutboundDelay?: () => number;
+  setLocalAuthList?: (entries: LocalAuthEntry[]) => void;
+  getLocalAuthList?: () => LocalAuthEntry[];
+  uploadOfflineTransactions?: () => Promise<number>;
+  queueOfflineTransaction?: (tx: OfflineTransaction) => void;
   openSocket?: (url: string) => ControlSocket;
   schedule?: (callback: () => void, delayMs: number) => { cancel(): void };
 }
@@ -180,6 +188,49 @@ export class SimulatorControlClient {
       this.options.setReconnectStorm(undefined);
       return { cleared: true };
     }
+    if (request.action === "set-outbound-delay") {
+      if (!this.options.setOutboundDelay) {
+        throw new ControlProtocolError("not-ready", "Outbound delay is not supported.");
+      }
+      const delayMs = readDelayMs(request.payload);
+      this.options.setOutboundDelay(delayMs);
+      return { configured: true, delayMs };
+    }
+    if (request.action === "clear-outbound-delay") {
+      if (!this.options.setOutboundDelay) {
+        throw new ControlProtocolError("not-ready", "Outbound delay is not supported.");
+      }
+      this.options.setOutboundDelay(0);
+      return { cleared: true };
+    }
+    if (request.action === "set-local-auth-list") {
+      if (!this.options.setLocalAuthList) {
+        throw new ControlProtocolError("not-ready", "Local auth list is not supported.");
+      }
+      const entries = readLocalAuthList(request.payload);
+      this.options.setLocalAuthList(entries);
+      return { configured: true, count: entries.length };
+    }
+    if (request.action === "get-local-auth-list") {
+      if (!this.options.getLocalAuthList) {
+        throw new ControlProtocolError("not-ready", "Local auth list is not supported.");
+      }
+      return { entries: this.options.getLocalAuthList() };
+    }
+    if (request.action === "upload-offline-transactions") {
+      if (!this.options.uploadOfflineTransactions) {
+        throw new ControlProtocolError("not-ready", "Offline transactions are not supported.");
+      }
+      return this.options.uploadOfflineTransactions().then((uploaded) => ({ uploaded }));
+    }
+    if (request.action === "queue-offline-transaction") {
+      if (!this.options.queueOfflineTransaction) {
+        throw new ControlProtocolError("not-ready", "Offline transactions are not supported.");
+      }
+      const tx = readOfflineTransaction(request.payload);
+      this.options.queueOfflineTransaction(tx);
+      return { queued: true };
+    }
     throw new ControlProtocolError("not-supported", `Unsupported simulator action ${request.action}.`);
   }
 
@@ -266,6 +317,86 @@ function readOptionalConnector(payload: unknown): number | undefined {
   }
   const connectorId = (payload as { connectorId?: unknown }).connectorId;
   return typeof connectorId === "number" ? connectorId : undefined;
+}
+
+function readDelayMs(payload: unknown): number {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "set-outbound-delay requires a delayMs.");
+  }
+  const delayMs = (payload as { delayMs?: unknown }).delayMs;
+  if (typeof delayMs !== "number" || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_DELAY_MS) {
+    throw new ControlProtocolError("invalid-message", `delayMs must be an integer from 0 to ${MAX_DELAY_MS}.`);
+  }
+  return delayMs;
+}
+
+function readLocalAuthList(payload: unknown): LocalAuthEntry[] {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "set-local-auth-list requires entries.");
+  }
+  const entries = (payload as { entries?: unknown }).entries;
+  if (!Array.isArray(entries)) {
+    throw new ControlProtocolError("invalid-message", "entries must be an array.");
+  }
+  return entries.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must be an object.`);
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.idTag !== "string" || e.idTag.length === 0) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must have an idTag.`);
+    }
+    const validStatuses = ["Accepted", "Blocked", "Expired", "Invalid", "ConcurrentTx"];
+    if (typeof e.status !== "string" || !validStatuses.includes(e.status)) {
+      throw new ControlProtocolError("invalid-message", `Entry ${index} must have a valid status.`);
+    }
+    return {
+      idTag: e.idTag,
+      status: e.status as LocalAuthEntry["status"],
+      ...(typeof e.expiryDate === "string" ? { expiryDate: e.expiryDate } : {}),
+    };
+  });
+}
+
+function readOfflineTransaction(payload: unknown): OfflineTransaction {
+  if (typeof payload !== "object" || payload === null) {
+    throw new ControlProtocolError("invalid-message", "queue-offline-transaction requires transaction data.");
+  }
+  const p = payload as Record<string, unknown>;
+  if (typeof p.transactionId !== "number" || !Number.isInteger(p.transactionId)) {
+    throw new ControlProtocolError("invalid-message", "transactionId must be an integer.");
+  }
+  if (typeof p.connectorId !== "number" || !Number.isInteger(p.connectorId)) {
+    throw new ControlProtocolError("invalid-message", "connectorId must be an integer.");
+  }
+  if (typeof p.idTag !== "string" || p.idTag.length === 0) {
+    throw new ControlProtocolError("invalid-message", "idTag must be a non-empty string.");
+  }
+  if (typeof p.meterStart !== "number") {
+    throw new ControlProtocolError("invalid-message", "meterStart must be a number.");
+  }
+  if (typeof p.meterStop !== "number") {
+    throw new ControlProtocolError("invalid-message", "meterStop must be a number.");
+  }
+  if (typeof p.startTimestamp !== "string") {
+    throw new ControlProtocolError("invalid-message", "startTimestamp must be a string.");
+  }
+  if (typeof p.stopTimestamp !== "string") {
+    throw new ControlProtocolError("invalid-message", "stopTimestamp must be a string.");
+  }
+  if (typeof p.reason !== "string") {
+    throw new ControlProtocolError("invalid-message", "reason must be a string.");
+  }
+  return {
+    transactionId: p.transactionId,
+    connectorId: p.connectorId,
+    idTag: p.idTag,
+    meterStart: p.meterStart,
+    meterStop: p.meterStop,
+    startTimestamp: p.startTimestamp,
+    stopTimestamp: p.stopTimestamp,
+    reason: p.reason,
+  };
 }
 
 function openWebSocket(url: string): ControlSocket {

@@ -87,5 +87,11 @@ function cloneEffect(effect: FaultEffect): FaultEffect {
   if (effect.type === "delay") {
     return { type: "delay", delayMs: effect.delayMs };
   }
-  return effect.type === "disconnect" ? { type: "disconnect" } : { type: "suppress-response" };
+  if (effect.type === "malformed-response") {
+    return { type: "malformed-response", rawPayload: effect.rawPayload };
+  }
+  if (effect.type === "disconnect") {
+    return { type: "disconnect" };
+  }
+  return { type: "suppress-response" };
 }

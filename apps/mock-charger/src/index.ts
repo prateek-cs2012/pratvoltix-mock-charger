@@ -32,6 +32,8 @@ const control = new SimulatorControlClient({
   connectOcpp: (url) => session.connect(url),
   disconnectTarget: (restoreBootstrap) => session.disconnect(restoreBootstrap),
   emitOcpp: (action, connectorId) => session.emit(action, connectorId),
+  setReconnectStorm: (config) => session.setReconnectStorm(config),
+  getReconnectStorm: () => session.getReconnectStorm(),
 });
 notifyControl = (action, payload) => control.notify(action, payload);
 

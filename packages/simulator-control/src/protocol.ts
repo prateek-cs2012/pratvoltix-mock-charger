@@ -18,6 +18,8 @@ export const CONTROL_ACTIONS = [
   "emit-ocpp",
   "ocpp-frame",
   "ocpp-state",
+  "set-reconnect-storm",
+  "clear-reconnect-storm",
 ] as const;
 
 export type ControlAction = (typeof CONTROL_ACTIONS)[number];

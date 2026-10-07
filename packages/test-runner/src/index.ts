@@ -74,6 +74,10 @@ export function assertDefined<T>(value: T | null | undefined, message: string): 
   }
 }
 
+export function waitFor(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export interface PlanStep {
   id: string;
   title?: string;

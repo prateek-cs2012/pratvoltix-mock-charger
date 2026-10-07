@@ -10,6 +10,15 @@ import {
 import type { FaultEffect } from "@pratvoltix/simulator-control";
 import type { FaultEngine } from "./fault-engine.js";
 
+export type ConnectorStatus = "Available" | "Preparing" | "Charging" | "SuspendedEVSE" | "SuspendedEV" | "Finishing" | "Reserved" | "Unavailable" | "Faulted";
+
+export interface ChargePointState {
+  transactionId: number | null;
+  connectorStatus: ConnectorStatus;
+  meterWh: number;
+  idTag: string | null;
+}
+
 export interface MockChargePointOptions {
   identity: string;
   vendor?: string;
@@ -17,6 +26,7 @@ export interface MockChargePointOptions {
   serialNumber?: string;
   firmwareVersion?: string;
   connectorId?: number;
+  initialState?: ChargePointState;
 }
 
 interface ConfigurationKey {
@@ -31,8 +41,10 @@ export interface MockChargePointHooks {
 
 export class MockChargePoint {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  private meterWh = 1_000;
-  private transactionId: number | null = null;
+  private meterWh: number;
+  private transactionId: number | null;
+  private connectorStatus: ConnectorStatus;
+  private idTag: string | null;
   private heartbeatInterval = 60;
   private readonly connectorId: number;
 
@@ -43,7 +55,25 @@ export class MockChargePoint {
     private readonly hooks: MockChargePointHooks = {},
   ) {
     this.connectorId = options.connectorId ?? 1;
+    const initialState = options.initialState;
+    this.transactionId = initialState?.transactionId ?? null;
+    this.connectorStatus = initialState?.connectorStatus ?? "Available";
+    this.meterWh = initialState?.meterWh ?? 1_000;
+    this.idTag = initialState?.idTag ?? null;
     this.connection.onCall((call) => this.handleCall(call));
+  }
+
+  getState(): ChargePointState {
+    return {
+      transactionId: this.transactionId,
+      connectorStatus: this.connectorStatus,
+      meterWh: this.meterWh,
+      idTag: this.idTag,
+    };
+  }
+
+  hasActiveTransaction(): boolean {
+    return this.transactionId !== null;
   }
 
   async announce(): Promise<void> {
@@ -59,7 +89,7 @@ export class MockChargePoint {
     }
     this.scheduleHeartbeat();
 
-    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload(this.transactionId ? "Charging" : "Available"));
+    await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload(this.connectorStatus));
   }
 
   async emit(action: string): Promise<void> {
@@ -159,7 +189,7 @@ export class MockChargePoint {
     if (requested === Ocpp16Action.StatusNotification) {
       await this.connection.call(
         Ocpp16Action.StatusNotification,
-        this.statusPayload(this.transactionId ? "Charging" : "Available"),
+        this.statusPayload(this.connectorStatus),
       );
       return;
     }
@@ -203,6 +233,8 @@ export class MockChargePoint {
       throw new Error("StartTransaction.conf did not include transactionId");
     }
     this.transactionId = started.transactionId;
+    this.idTag = idTag;
+    this.connectorStatus = "Charging";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Charging"));
     await this.connection.call(Ocpp16Action.MeterValues, {
       connectorId,
@@ -234,6 +266,8 @@ export class MockChargePoint {
       reason: "Remote",
     });
     this.transactionId = null;
+    this.idTag = null;
+    this.connectorStatus = "Available";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
   }
 

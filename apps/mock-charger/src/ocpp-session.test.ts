@@ -1,7 +1,8 @@
-import { ControlProtocolError } from "@pratvoltix/simulator-control";
+import { ControlProtocolError, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import { describe, expect, it } from "vitest";
 import { FaultEngine } from "./fault-engine.js";
 import { OcppSession, type OcppSocket } from "./ocpp-session.js";
+import type { ChargePointState } from "./mock-charge-point.js";
 
 class FakeSocket implements OcppSocket {
   protocol = "ocpp1.6";
@@ -138,5 +139,73 @@ describe("single OCPP socket", () => {
     await expect(pending).rejects.toThrow(/External CSMS connection failed/);
     await flush();
     expect(sockets).toHaveLength(1);
+  });
+});
+
+describe("state persistence across reconnects", () => {
+  it("persists state when socket closes", async () => {
+    const sockets: FakeSocket[] = [];
+    const notes: Array<{ action: string; payload: unknown }> = [];
+    const harness = sessionWith(sockets, notes);
+    harness.session.start();
+    await flush();
+    harness.openLatest();
+    await flush();
+    expect(harness.session.getPersistedState()).toBeUndefined();
+    sockets[0]!.close();
+    await flush();
+    const persistedState = harness.session.getPersistedState();
+    expect(persistedState).toBeDefined();
+    expect(persistedState?.connectorStatus).toBe("Available");
+    harness.session.stop();
+  });
+});
+
+describe("reconnect storm configuration", () => {
+  it("allows setting and clearing reconnect storm config", () => {
+    const sockets: FakeSocket[] = [];
+    const notes: Array<{ action: string; payload: unknown }> = [];
+    const harness = sessionWith(sockets, notes);
+    
+    expect(harness.session.getReconnectStorm()).toBeUndefined();
+    
+    const stormConfig: ReconnectStormConfig = {
+      burstCount: 5,
+      burstDelayMs: 100,
+      intervalMs: 1000,
+    };
+    harness.session.setReconnectStorm(stormConfig);
+    expect(harness.session.getReconnectStorm()).toEqual(stormConfig);
+    
+    harness.session.setReconnectStorm(undefined);
+    expect(harness.session.getReconnectStorm()).toBeUndefined();
+    harness.session.stop();
+  });
+
+  it("uses burst delay during reconnect storm", async () => {
+    const sockets: FakeSocket[] = [];
+    const notes: Array<{ action: string; payload: unknown }> = [];
+    const harness = sessionWith(sockets, notes);
+    
+    harness.session.setReconnectStorm({
+      burstCount: 3,
+      burstDelayMs: 50,
+      intervalMs: 500,
+    });
+    
+    harness.session.start();
+    await flush();
+    harness.openLatest();
+    await flush();
+    
+    const startTime = Date.now();
+    sockets[0]!.close();
+    
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(sockets.length).toBeGreaterThan(1);
+    const elapsed = Date.now() - startTime;
+    expect(elapsed).toBeLessThan(200);
+    
+    harness.session.stop();
   });
 });

@@ -5,7 +5,9 @@ import {
   ControlProtocolError,
   SIMULATOR_CAPABILITY,
   validateFaultRule,
+  validateReconnectStormConfig,
   type ControlRequest,
+  type ReconnectStormConfig,
 } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
@@ -36,6 +38,8 @@ export interface SimulatorControlClientOptions {
   connectOcpp?: (url: string) => Promise<{ state: "connected"; subprotocol: string }>;
   disconnectTarget?: (restoreBootstrap: boolean) => Promise<{ state: "disconnected" }>;
   emitOcpp?: (action: string, connectorId?: number) => Promise<{ status: "Accepted" }>;
+  setReconnectStorm?: (config: ReconnectStormConfig | undefined) => void;
+  getReconnectStorm?: () => ReconnectStormConfig | undefined;
   openSocket?: (url: string) => ControlSocket;
   schedule?: (callback: () => void, delayMs: number) => { cancel(): void };
 }
@@ -158,7 +162,23 @@ export class SimulatorControlClient {
         simulatorVersion: this.options.simulatorVersion,
         capabilities: [SIMULATOR_CAPABILITY],
         activeFaults: this.options.faults.list(),
+        reconnectStorm: this.options.getReconnectStorm?.(),
       };
+    }
+    if (request.action === "set-reconnect-storm") {
+      if (!this.options.setReconnectStorm) {
+        throw new ControlProtocolError("not-ready", "Reconnect storm is not supported.");
+      }
+      const config = validateReconnectStormConfig(request.payload);
+      this.options.setReconnectStorm(config);
+      return { configured: true, ...config };
+    }
+    if (request.action === "clear-reconnect-storm") {
+      if (!this.options.setReconnectStorm) {
+        throw new ControlProtocolError("not-ready", "Reconnect storm is not supported.");
+      }
+      this.options.setReconnectStorm(undefined);
+      return { cleared: true };
     }
     throw new ControlProtocolError("not-supported", `Unsupported simulator action ${request.action}.`);
   }

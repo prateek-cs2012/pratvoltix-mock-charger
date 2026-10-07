@@ -1,8 +1,8 @@
 import { OcppConnection, transportFromWebSocket } from "@pratvoltix/ocpp";
-import { ControlProtocolError, sanitizeCsmsUrl } from "@pratvoltix/simulator-control";
+import { ControlProtocolError, sanitizeCsmsUrl, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
-import { MockChargePoint } from "./mock-charge-point.js";
+import { MockChargePoint, type ChargePointState } from "./mock-charge-point.js";
 
 const CONNECT_TIMEOUT_MS = 8_000;
 
@@ -37,8 +37,28 @@ export class OcppSession {
   private suppressReconnect = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private persistedState: ChargePointState | undefined;
+  private reconnectStorm: ReconnectStormConfig | undefined;
+  private stormBurstRemaining = 0;
 
   constructor(private readonly options: OcppSessionOptions) {}
+
+  setReconnectStorm(config: ReconnectStormConfig | undefined): void {
+    this.reconnectStorm = config;
+    if (config) {
+      this.stormBurstRemaining = config.burstCount;
+    } else {
+      this.stormBurstRemaining = 0;
+    }
+  }
+
+  getReconnectStorm(): ReconnectStormConfig | undefined {
+    return this.reconnectStorm;
+  }
+
+  getPersistedState(): ChargePointState | undefined {
+    return this.persistedState;
+  }
 
   start(): void {
     void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
@@ -160,6 +180,9 @@ export class OcppSession {
         }
         if (this.socket === socket) {
           this.socket = undefined;
+          if (this.chargePoint) {
+            this.persistedState = this.chargePoint.getState();
+          }
           this.chargePoint?.close();
           this.chargePoint = undefined;
         }
@@ -194,6 +217,7 @@ export class OcppSession {
         identity: this.options.identity,
         vendor: this.options.vendor ?? "Pratvoltix",
         model: this.options.model ?? "Lab-One",
+        initialState: this.persistedState,
       },
       this.options.faults,
       { disconnectOcpp: () => socket.close() },
@@ -243,12 +267,27 @@ export class OcppSession {
     if (this.stopped || this.reconnectTimer || this.holdingExternal) {
       return;
     }
+    let delayMs = 2_000;
+    if (this.reconnectStorm && this.stormBurstRemaining > 0) {
+      delayMs = this.reconnectStorm.burstDelayMs;
+      this.stormBurstRemaining -= 1;
+      if (this.stormBurstRemaining === 0) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = undefined;
+          this.stormBurstRemaining = this.reconnectStorm?.burstCount ?? 0;
+          void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
+            this.logIssue(error);
+          });
+        }, this.reconnectStorm.intervalMs);
+        return;
+      }
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
         this.logIssue(error);
       });
-    }, 2_000);
+    }, delayMs);
   }
 
   private clearReconnect(): void {

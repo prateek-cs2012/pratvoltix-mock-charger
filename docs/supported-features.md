@@ -41,7 +41,7 @@ Validated green (Mac/CSMS lab): reconnect-storm, disconnect-mid-tx, soft-reset p
 | Capability | Behavior | Catalog |
 | --- | --- | --- |
 | RemoteStart / RemoteStop | Full lifecycle: Authorize → StartTransaction → Charging → MeterValues → Stop → Available | `transaction-lifecycle` |
-| RemoteStart rejected | Rejected when connector unavailable / not idle (as implemented) | `remote-start-rejected` |
+| RemoteStart rejected | **Fault-injected** one-shot CallResult `Rejected` (negative suite / `withFault`) — not a natural Occupied/Unavailable reject. Native reject today is active-tx / missing `idTag` only. | `remote-start-rejected` |
 | Local cable start | Control `local-start`: Preparing → Authorize → StartTransaction → Charging (not RemoteStart) | `local-cable-start` (**Gap 8**) |
 | Local stop | Control `local-stop` with `StopTransaction.reason` (e.g. Local) + Finishing → Available | `local-cable-start` |
 | Local auth list skip | Accepted idTag in local list skips Authorize on start | `local-auth-skip` (**Gap 3**) |

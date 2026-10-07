@@ -60,7 +60,8 @@ services:
       dockerfile: apps/mock-charger/Dockerfile
     restart: unless-stopped
     environment:
-      CSMS_URL: ws://api:8080/ocpp
+      # OCPP to live CSMS gateway; lab-control stays on the lab API.
+      CSMS_URL: ws://host.docker.internal:8080/ocpp
       CONTROL_URL: ws://api:8080/lab-control
       CHARGE_POINT_ID: CP001
       CHARGE_POINT_VENDOR: Pratvoltix

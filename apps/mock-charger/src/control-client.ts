@@ -363,8 +363,8 @@ function readOfflineTransaction(payload: unknown): OfflineTransaction {
     throw new ControlProtocolError("invalid-message", "queue-offline-transaction requires transaction data.");
   }
   const p = payload as Record<string, unknown>;
-  if (typeof p.transactionId !== "number" || !Number.isInteger(p.transactionId)) {
-    throw new ControlProtocolError("invalid-message", "transactionId must be an integer.");
+  if (typeof p.localId !== "number" || !Number.isInteger(p.localId)) {
+    throw new ControlProtocolError("invalid-message", "localId must be an integer.");
   }
   if (typeof p.connectorId !== "number" || !Number.isInteger(p.connectorId)) {
     throw new ControlProtocolError("invalid-message", "connectorId must be an integer.");
@@ -388,7 +388,7 @@ function readOfflineTransaction(payload: unknown): OfflineTransaction {
     throw new ControlProtocolError("invalid-message", "reason must be a string.");
   }
   return {
-    transactionId: p.transactionId,
+    localId: p.localId,
     connectorId: p.connectorId,
     idTag: p.idTag,
     meterStart: p.meterStart,

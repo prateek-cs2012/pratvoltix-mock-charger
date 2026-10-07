@@ -20,7 +20,7 @@ export interface ChargePointState {
 }
 
 export interface OfflineTransaction {
-  transactionId: number;
+  localId: number;
   connectorId: number;
   idTag: string;
   meterStart: number;
@@ -72,6 +72,7 @@ export class MockChargePoint {
   private lastStopTxResponse: Record<string, unknown> | null = null;
 
   private localAuthList: LocalAuthEntry[] = [];
+  private localAuthListVersion = 0;
   private offlineQueue: OfflineTransaction[] = [];
   private authorizationCache = new Map<string, LocalAuthEntry>();
   private outboundDelayMs = 0;
@@ -109,6 +110,10 @@ export class MockChargePoint {
 
   getLocalAuthList(): LocalAuthEntry[] {
     return [...this.localAuthList];
+  }
+
+  getLocalListVersion(): number {
+    return this.localAuthListVersion;
   }
 
   getOfflineQueue(): OfflineTransaction[] {
@@ -214,7 +219,7 @@ export class MockChargePoint {
       case Ocpp16Action.SendLocalList:
         return this.handleSendLocalList(call);
       case Ocpp16Action.GetLocalListVersion:
-        return { listVersion: this.localAuthList.length > 0 ? 1 : 0 };
+        return { listVersion: this.localAuthListVersion };
       default:
         throw new OcppResponseError(Ocpp16ErrorCode.NotSupported, `Unsupported action ${call.action}`);
     }
@@ -396,20 +401,23 @@ export class MockChargePoint {
     let uploaded = 0;
     for (const tx of queue) {
       try {
-        await this.connection.call(Ocpp16Action.StartTransaction, {
+        const started = await this.connection.call<{ transactionId?: number }>(Ocpp16Action.StartTransaction, {
           connectorId: tx.connectorId,
           idTag: tx.idTag,
           meterStart: tx.meterStart,
           timestamp: tx.startTimestamp,
         });
+        if (typeof started.transactionId !== "number") {
+          break;
+        }
         await this.connection.call(Ocpp16Action.StopTransaction, {
-          transactionId: tx.transactionId,
+          transactionId: started.transactionId,
           meterStop: tx.meterStop,
           timestamp: tx.stopTimestamp,
           reason: tx.reason,
         });
         uploaded += 1;
-        this.offlineQueue = this.offlineQueue.filter((t) => t.transactionId !== tx.transactionId);
+        this.offlineQueue = this.offlineQueue.filter((t) => t.localId !== tx.localId);
       } catch {
         break;
       }
@@ -468,6 +476,7 @@ export class MockChargePoint {
       }
     }
 
+    this.localAuthListVersion = listVersion;
     return { status: "Accepted" };
   }
 

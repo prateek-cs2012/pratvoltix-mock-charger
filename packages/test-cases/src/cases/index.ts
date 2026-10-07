@@ -1,6 +1,7 @@
 import { bootNotificationCase } from "./boot-notification.case.js";
 import { changeAvailabilityCase } from "./change-availability.case.js";
 import { changeConfigurationCase } from "./change-configuration.case.js";
+import { configMeterRealismCase } from "./config-meter-realism.case.js";
 import { chargingProfileCase } from "./charging-profile.case.js";
 import { firmwareDiagnosticsCase } from "./firmware-diagnostics.case.js";
 import { getConfigurationCase } from "./get-configuration.case.js";
@@ -31,6 +32,7 @@ export const cases = [
   getConfigurationCase,
   changeAvailabilityCase,
   changeConfigurationCase,
+  configMeterRealismCase,
   chargingProfileCase,
   firmwareDiagnosticsCase,
   transactionLifecycleCase,

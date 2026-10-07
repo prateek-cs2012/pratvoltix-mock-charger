@@ -38,7 +38,7 @@ describe("MockChargePoint", () => {
     chargePoint.close();
     const failed = report.results.filter((result) => result.status !== "passed");
     expect(failed, JSON.stringify(failed, null, 2)).toEqual([]);
-  });
+  }, 60_000);
 });
 
 describe("ChargePointState persistence", () => {
@@ -172,6 +172,89 @@ describe("ChargePointState persistence", () => {
 });
 
 
+
+
+describe("config / meter realism (Gap 10)", () => {
+  it("applies MeterValueSampleInterval and emits periodic MeterValues while charging", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    let meterCount = 0;
+
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.Authorize) {
+        return { idTagInfo: { status: "Accepted" } };
+      }
+      if (call.action === Ocpp16Action.StartTransaction) {
+        return { transactionId: 55, idTagInfo: { status: "Accepted" } };
+      }
+      if (call.action === Ocpp16Action.StopTransaction) {
+        return { idTagInfo: { status: "Accepted" } };
+      }
+      if (call.action === Ocpp16Action.MeterValues) {
+        meterCount += 1;
+        return {};
+      }
+      return {};
+    });
+
+    await chargePoint.announce();
+    const cfg = await csms.call<{ status: string }>(Ocpp16Action.ChangeConfiguration, {
+      key: "MeterValueSampleInterval",
+      value: "1",
+    });
+    expect(cfg.status).toBe("Accepted");
+
+    const got = await csms.call<{ configurationKey?: Array<{ key?: string; value?: string }> }>(
+      Ocpp16Action.GetConfiguration,
+      { key: ["MeterValueSampleInterval"] },
+    );
+    expect(got.configurationKey?.[0]?.value).toBe("1");
+
+    await csms.call(Ocpp16Action.RemoteStartTransaction, { connectorId: 1, idTag: "TAG1" });
+    await new Promise((r) => setTimeout(r, 2500));
+    expect(meterCount).toBeGreaterThanOrEqual(2);
+
+    await csms.call(Ocpp16Action.RemoteStopTransaction, { transactionId: 55 });
+    await new Promise((r) => setTimeout(r, 100));
+    const afterStop = meterCount;
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(meterCount).toBe(afterStop);
+    chargePoint.close();
+  });
+
+  it("AuthorizeRemoteTxRequests=false skips Authorize on RemoteStart", async () => {
+    const { left, right } = linkTransports();
+    const csms = new OcppConnection(left);
+    const chargePoint = new MockChargePoint(new OcppConnection(right), { identity: "CP001" });
+    let authorizeCount = 0;
+
+    csms.onCall(async (call) => {
+      if (call.action === Ocpp16Action.BootNotification) {
+        return { status: "Accepted", currentTime: new Date().toISOString(), interval: 300 };
+      }
+      if (call.action === Ocpp16Action.Authorize) {
+        authorizeCount += 1;
+        return { idTagInfo: { status: "Accepted" } };
+      }
+      if (call.action === Ocpp16Action.StartTransaction) {
+        return { transactionId: 66, idTagInfo: { status: "Accepted" } };
+      }
+      return {};
+    });
+
+    await chargePoint.announce();
+    await csms.call(Ocpp16Action.ChangeConfiguration, { key: "AuthorizeRemoteTxRequests", value: "false" });
+    await csms.call(Ocpp16Action.RemoteStartTransaction, { connectorId: 1, idTag: "TAG1" });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(authorizeCount).toBe(0);
+    expect(chargePoint.getState().transactionId).toBe(66);
+    chargePoint.close();
+  });
+});
 
 describe("CSMS action stubs (Gap 9)", () => {
   async function boot(csms: OcppConnection, chargePoint: MockChargePoint) {

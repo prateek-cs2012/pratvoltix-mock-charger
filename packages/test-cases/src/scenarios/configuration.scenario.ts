@@ -6,5 +6,5 @@ export const configurationScenario = defineScenario({
   description: "Read configuration, change HeartbeatInterval, and restore it.",
   version: "1.6",
   tags: ["configuration"],
-  caseIds: ["get-configuration", "change-configuration"],
+  caseIds: ["get-configuration", "change-configuration", "config-meter-realism"],
 });

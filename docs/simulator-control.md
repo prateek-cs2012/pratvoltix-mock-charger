@@ -20,7 +20,7 @@ Requests and responses share a `requestId`:
 { "type": "response", "requestId": "abc", "ok": true, "payload": {} }
 ```
 
-Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`, `set-reconnect-storm`, `clear-reconnect-storm`.
+Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`, `connect-ocpp`, `disconnect-ocpp`, `emit-ocpp`, `ocpp-frame`, `ocpp-state`, `set-reconnect-storm`, `clear-reconnect-storm`, `set-outbound-delay`, `clear-outbound-delay`, `set-local-auth-list`, `get-local-auth-list`, `upload-offline-transactions`, `queue-offline-transaction`.
 
 The mock charger sends `hello` after it connects:
 
@@ -58,6 +58,7 @@ Effects in this milestone:
 - `call-error` returns a CALLERROR. `errorCode` and `description` are required. `details` is an optional JSON object.
 - `suppress-response` leaves the CALL unanswered so the CSMS timeout can be tested.
 - `disconnect` closes only the OCPP socket. The control socket stays up.
+- `malformed-response` sends the raw `rawPayload` string on the OCPP socket instead of a valid response. The call is left unanswered from the CSMS perspective.
 
 `occurrence` defaults to the next matching call (`1`). Rules are checked in arm order. A call increments the occurrence count of each matching rule until one reaches its occurrence; that rule is consumed and later calls do not see it. Active rule ids must be unique. At most 16 rules can be armed. There is no callback or expression language.
 
@@ -88,6 +89,112 @@ When a reconnect storm is configured, after each socket close the simulator reco
 ```
 
 Reconnect storm configuration is independent of fault rules. Clearing faults does not clear the storm. The storm is memory only and resets when the mock charger restarts.
+
+## Outbound delay (Gap 4)
+
+The `set-outbound-delay` and `clear-outbound-delay` actions inject delays before outbound OCPP calls during transaction start. This enables testing CSMS timeout-then-succeed scenarios where the charger responds slower than expected.
+
+```json
+{ "type": "request", "requestId": "delay1", "action": "set-outbound-delay", "payload": { "delayMs": 5000 }}
+```
+
+| Field | Description |
+| --- | --- |
+| `delayMs` | Milliseconds to wait before Authorize and StartTransaction (0–30000) |
+
+The delay applies before Authorize and before StartTransaction in `beginTransaction`. Setting `delayMs` to 0 or calling `clear-outbound-delay` removes the delay.
+
+```json
+{ "type": "request", "requestId": "delay2", "action": "clear-outbound-delay", "payload": {} }
+```
+
+## Local authorization list (Gap 3)
+
+The `set-local-auth-list` and `get-local-auth-list` actions manage the charger's local authorization cache. This enables testing offline authorization scenarios.
+
+```json
+{ "type": "request", "requestId": "auth1", "action": "set-local-auth-list", "payload": {
+  "entries": [
+    { "idTag": "RFID001", "status": "Accepted" },
+    { "idTag": "RFID002", "status": "Blocked" }
+  ]
+}}
+```
+
+| Field | Description |
+| --- | --- |
+| `entries` | Array of local authorization entries |
+| `entries[].idTag` | The RFID tag identifier |
+| `entries[].status` | One of `Accepted`, `Blocked`, `Expired`, `Invalid`, `ConcurrentTx` |
+| `entries[].expiryDate` | Optional ISO 8601 expiry timestamp |
+
+When a local auth entry exists for an idTag, the charger uses the cached authorization status instead of sending an Authorize call to the CSMS. The list is also updated by OCPP `SendLocalList` calls from the CSMS.
+
+```json
+{ "type": "request", "requestId": "auth2", "action": "get-local-auth-list", "payload": {} }
+```
+
+Returns `{ "entries": [...] }` with the current local authorization list.
+
+## Offline transaction queue (Gap 3)
+
+The `queue-offline-transaction` and `upload-offline-transactions` actions manage transactions completed while disconnected from the CSMS.
+
+```json
+{ "type": "request", "requestId": "offline1", "action": "queue-offline-transaction", "payload": {
+  "transactionId": 1001,
+  "connectorId": 1,
+  "idTag": "RFID001",
+  "meterStart": 1000,
+  "meterStop": 1250,
+  "startTimestamp": "2024-01-15T10:00:00Z",
+  "stopTimestamp": "2024-01-15T10:30:00Z",
+  "reason": "Local"
+}}
+```
+
+| Field | Description |
+| --- | --- |
+| `transactionId` | Integer transaction identifier |
+| `connectorId` | Connector where the transaction occurred |
+| `idTag` | RFID tag that authorized the transaction |
+| `meterStart` | Meter reading at transaction start (Wh) |
+| `meterStop` | Meter reading at transaction stop (Wh) |
+| `startTimestamp` | ISO 8601 timestamp when transaction started |
+| `stopTimestamp` | ISO 8601 timestamp when transaction stopped |
+| `reason` | Stop reason (e.g., `Local`, `Remote`, `EVDisconnected`) |
+
+After reconnection, call `upload-offline-transactions` to replay queued transactions to the CSMS:
+
+```json
+{ "type": "request", "requestId": "offline2", "action": "upload-offline-transactions", "payload": {} }
+```
+
+Returns `{ "uploaded": N }` where N is the count of successfully uploaded transactions. Transactions are uploaded in order; upload stops at the first failure.
+
+## Duplicate message handling (Gap 2)
+
+The mock charger implements idempotent handling for StartTransaction and StopTransaction. If a duplicate request arrives with the same key parameters:
+
+- **StartTransaction**: Key is `connectorId:idTag:meterStart`. A duplicate returns the same transactionId without sending another StartTransaction to the CSMS.
+- **StopTransaction**: Key is `transactionId`. A duplicate returns the same response without sending another StopTransaction to the CSMS.
+
+This enables testing CSMS behavior when the charger retries messages after a network disruption.
+
+## Malformed response injection (Gap 7)
+
+The `malformed-response` fault effect sends arbitrary raw data on the OCPP WebSocket instead of a valid CALLRESULT/CALLERROR. This enables negative testing of CSMS protocol parsing.
+
+```ts
+{
+  id: "malformed-json",
+  match: { action: "Heartbeat", occurrence: 1 },
+  effect: { type: "malformed-response", rawPayload: "not valid json at all" },
+  consume: "once"
+}
+```
+
+The `rawPayload` is sent verbatim on the WebSocket. The CSMS should detect the malformed frame and handle it appropriately (e.g., close the connection or ignore).
 
 ## Cleanup
 
@@ -158,4 +265,6 @@ Docker Compose points the mock charger at the `api` service name. No extra host 
 
 ## Limits
 
-Not in this milestone: malformed-frame injection, message duplication, reordering, bandwidth limits, persisted faults, skipped cases, or a public mutation API. Fault payloads are not stored in the run transcript. Redaction of OCPP traces is unchanged and does not scan control messages, because those messages are not traced.
+Not in this milestone: message reordering, bandwidth limits, persisted faults, skipped cases, or a public mutation API. Fault payloads are not stored in the run transcript. Redaction of OCPP traces is unchanged and does not scan control messages, because those messages are not traced.
+
+Implemented in this version: malformed-frame injection (via `malformed-response` effect), duplicate message idempotency, local authorization cache, offline transaction queue, and outbound delay injection.

@@ -77,6 +77,10 @@ export class MockChargePoint {
   private authorizationCache = new Map<string, LocalAuthEntry>();
   private outboundDelayMs = 0;
 
+  private reservationId: number | null = null;
+  private availabilityScheduled = false;
+  private chargingProfiles = new Map<string, Record<string, unknown>>();
+
   constructor(
     private readonly connection: OcppConnection,
     private readonly options: MockChargePointOptions,
@@ -291,6 +295,22 @@ export class MockChargePoint {
         return this.handleSendLocalList(call);
       case Ocpp16Action.GetLocalListVersion:
         return { listVersion: this.localAuthListVersion };
+      case Ocpp16Action.ChangeAvailability:
+        return this.changeAvailability(call);
+      case Ocpp16Action.ReserveNow:
+        return this.reserveNow(call);
+      case Ocpp16Action.CancelReservation:
+        return this.cancelReservation(call);
+      case Ocpp16Action.SetChargingProfile:
+        return this.setChargingProfile(call);
+      case Ocpp16Action.ClearChargingProfile:
+        return this.clearChargingProfile(call);
+      case Ocpp16Action.GetCompositeSchedule:
+        return this.getCompositeSchedule(call);
+      case Ocpp16Action.UpdateFirmware:
+        return this.updateFirmware(call);
+      case Ocpp16Action.GetDiagnostics:
+        return this.getDiagnostics(call);
       default:
         throw new OcppResponseError(Ocpp16ErrorCode.NotSupported, `Unsupported action ${call.action}`);
     }
@@ -466,6 +486,12 @@ export class MockChargePoint {
 
     this.transactionId = null;
     this.idTag = null;
+    if (this.availabilityScheduled) {
+      this.availabilityScheduled = false;
+      this.connectorStatus = "Unavailable";
+      await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Unavailable"));
+      return;
+    }
     this.connectorStatus = "Available";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
   }
@@ -513,6 +539,186 @@ export class MockChargePoint {
       this.connection.close();
     }, 25);
     return { status: "Accepted" };
+  }
+
+
+  private changeAvailability(call: InboundCall): Record<string, unknown> {
+    const type = readString(call.payload, "type");
+    const connectorId = readNumber(call.payload, "connectorId");
+    if (type !== "Operative" && type !== "Inoperative") {
+      return { status: "Rejected" };
+    }
+    if (connectorId !== undefined && connectorId !== 0 && connectorId !== this.connectorId) {
+      return { status: "Rejected" };
+    }
+
+    if (type === "Inoperative") {
+      if (this.transactionId !== null) {
+        this.availabilityScheduled = true;
+        return { status: "Scheduled" };
+      }
+      this.availabilityScheduled = false;
+      this.connectorStatus = "Unavailable";
+      setTimeout(() => {
+        void this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Unavailable")).catch(() => undefined);
+      }, 0);
+      return { status: "Accepted" };
+    }
+
+    this.availabilityScheduled = false;
+    if (this.connectorStatus === "Unavailable" || this.connectorStatus === "Faulted") {
+      this.connectorStatus = "Available";
+      setTimeout(() => {
+        void this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available")).catch(() => undefined);
+      }, 0);
+    }
+    return { status: "Accepted" };
+  }
+
+  private reserveNow(call: InboundCall): Record<string, unknown> {
+    const reservationId = readNumber(call.payload, "reservationId");
+    const idTag = readString(call.payload, "idTag");
+    const expiryDate = readString(call.payload, "expiryDate");
+    const connectorId = readNumber(call.payload, "connectorId");
+
+    if (reservationId === undefined || !idTag || !expiryDate) {
+      return { status: "Rejected" };
+    }
+    if (connectorId !== undefined && connectorId !== 0 && connectorId !== this.connectorId) {
+      return { status: "Rejected" };
+    }
+    if (this.transactionId !== null || this.connectorStatus === "Charging" || this.connectorStatus === "Preparing") {
+      return { status: "Occupied" };
+    }
+    if (this.connectorStatus === "Unavailable" || this.connectorStatus === "Faulted") {
+      return { status: "Unavailable" };
+    }
+    if (this.reservationId !== null && this.reservationId !== reservationId) {
+      return { status: "Occupied" };
+    }
+
+    this.reservationId = reservationId;
+    this.connectorStatus = "Reserved";
+    setTimeout(() => {
+      void this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Reserved")).catch(() => undefined);
+    }, 0);
+    return { status: "Accepted" };
+  }
+
+  private cancelReservation(call: InboundCall): Record<string, unknown> {
+    const reservationId = readNumber(call.payload, "reservationId");
+    if (reservationId === undefined || this.reservationId === null || reservationId !== this.reservationId) {
+      return { status: "Rejected" };
+    }
+    this.reservationId = null;
+    if (this.connectorStatus === "Reserved") {
+      this.connectorStatus = "Available";
+      setTimeout(() => {
+        void this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available")).catch(() => undefined);
+      }, 0);
+    }
+    return { status: "Accepted" };
+  }
+
+  private setChargingProfile(call: InboundCall): Record<string, unknown> {
+    const connectorId = readNumber(call.payload, "connectorId");
+    const profile = call.payload["csChargingProfiles"];
+    if (!profile || typeof profile !== "object") {
+      return { status: "Rejected" };
+    }
+    if (connectorId !== undefined && connectorId !== 0 && connectorId !== this.connectorId) {
+      return { status: "Rejected" };
+    }
+    const stackLevel = readNumber(profile as Record<string, unknown>, "stackLevel") ?? 0;
+    const purpose = readString(profile as Record<string, unknown>, "chargingProfilePurpose") ?? "TxDefaultProfile";
+    const key = `${purpose}:${stackLevel}`;
+    this.chargingProfiles.set(key, profile as Record<string, unknown>);
+    return { status: "Accepted" };
+  }
+
+  private clearChargingProfile(call: InboundCall): Record<string, unknown> {
+    const id = readNumber(call.payload, "id");
+    const purpose = readString(call.payload, "chargingProfilePurpose");
+    const stackLevel = readNumber(call.payload, "stackLevel");
+
+    if (id === undefined && !purpose && stackLevel === undefined) {
+      this.chargingProfiles.clear();
+      return { status: "Accepted" };
+    }
+
+    let cleared = false;
+    for (const [key, profile] of [...this.chargingProfiles.entries()]) {
+      const matchId = id === undefined || readNumber(profile, "chargingProfileId") === id;
+      const matchPurpose = !purpose || readString(profile, "chargingProfilePurpose") === purpose;
+      const matchStack = stackLevel === undefined || readNumber(profile, "stackLevel") === stackLevel;
+      if (matchId && matchPurpose && matchStack) {
+        this.chargingProfiles.delete(key);
+        cleared = true;
+      }
+    }
+    return { status: cleared || this.chargingProfiles.size === 0 ? "Accepted" : "Unknown" };
+  }
+
+  private getCompositeSchedule(call: InboundCall): Record<string, unknown> {
+    const connectorId = readNumber(call.payload, "connectorId") ?? this.connectorId;
+    const duration = readNumber(call.payload, "duration") ?? 3600;
+    const profiles = [...this.chargingProfiles.values()];
+    const schedulePeriod =
+      profiles.length > 0
+        ? [{ startPeriod: 0, limit: 16, numberPhases: 3 }]
+        : [{ startPeriod: 0, limit: 32, numberPhases: 3 }];
+    return {
+      status: "Accepted",
+      connectorId,
+      scheduleStart: new Date().toISOString(),
+      chargingSchedule: {
+        duration,
+        chargingRateUnit: "A",
+        chargingSchedulePeriod: schedulePeriod,
+      },
+    };
+  }
+
+  private updateFirmware(call: InboundCall): Record<string, unknown> {
+    const location = readString(call.payload, "location");
+    if (!location) {
+      return { status: "Rejected" };
+    }
+    const statuses = ["Downloading", "Downloaded", "Installing", "Installed"] as const;
+    setTimeout(() => {
+      void (async () => {
+        for (const status of statuses) {
+          try {
+            await this.connection.call(Ocpp16Action.FirmwareStatusNotification, { status });
+          } catch (error) {
+            console.error("FirmwareStatusNotification failed", error);
+            return;
+          }
+        }
+      })();
+    }, 0);
+    return {};
+  }
+
+  private getDiagnostics(call: InboundCall): Record<string, unknown> {
+    const location = readString(call.payload, "location");
+    if (!location) {
+      return {};
+    }
+    const fileName = `diag-${this.options.identity}-${Date.now()}.log`;
+    setTimeout(() => {
+      void (async () => {
+        for (const status of ["Uploading", "Uploaded"] as const) {
+          try {
+            await this.connection.call(Ocpp16Action.DiagnosticsStatusNotification, { status });
+          } catch (error) {
+            console.error("DiagnosticsStatusNotification failed", error);
+            return;
+          }
+        }
+      })();
+    }, 0);
+    return { fileName };
   }
 
   private handleSendLocalList(call: InboundCall): Record<string, unknown> {

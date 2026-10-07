@@ -1,5 +1,8 @@
 import { bootNotificationCase } from "./boot-notification.case.js";
+import { changeAvailabilityCase } from "./change-availability.case.js";
 import { changeConfigurationCase } from "./change-configuration.case.js";
+import { chargingProfileCase } from "./charging-profile.case.js";
+import { firmwareDiagnosticsCase } from "./firmware-diagnostics.case.js";
 import { getConfigurationCase } from "./get-configuration.case.js";
 import { delayedTriggerHeartbeatCase } from "./delayed-trigger-heartbeat.case.js";
 import { disconnectMidTxCase } from "./disconnect-mid-tx.case.js";
@@ -13,6 +16,7 @@ import { duplicateStopCase } from "./duplicate-stop.case.js";
 import { offlineUploadCase } from "./offline-upload.case.js";
 import { outboundDelayCase } from "./outbound-delay.case.js";
 import { reconnectStormCase } from "./reconnect-storm.case.js";
+import { reserveNowCase } from "./reserve-now.case.js";
 import { remoteStartRejectedCase } from "./remote-start-rejected.case.js";
 import { resetCallErrorCase } from "./reset-call-error.case.js";
 import { softResetCase } from "./soft-reset.case.js";
@@ -25,11 +29,15 @@ export const cases = [
   heartbeatCase,
   statusNotificationCase,
   getConfigurationCase,
+  changeAvailabilityCase,
   changeConfigurationCase,
+  chargingProfileCase,
+  firmwareDiagnosticsCase,
   transactionLifecycleCase,
   disconnectMidTxCase,
   reconnectStormCase,
   softResetCase,
+  reserveNowCase,
   remoteStartRejectedCase,
   resetCallErrorCase,
   getConfigurationTimeoutCase,

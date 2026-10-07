@@ -64,6 +64,9 @@ export class MockChargePoint {
   private connectorStatus: ConnectorStatus;
   private idTag: string | null;
   private heartbeatInterval = 60;
+  private meterValueSampleInterval = 10;
+  private authorizeRemoteTxRequests = true;
+  private meterSampleTimer: ReturnType<typeof setInterval> | undefined;
   private readonly connectorId: number;
 
   private lastStartTxKey: string | null = null;
@@ -237,6 +240,7 @@ export class MockChargePoint {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+    this.stopMeterSampling();
   }
 
   private async handleCall(call: InboundCall): Promise<Record<string, unknown>> {
@@ -387,14 +391,18 @@ export class MockChargePoint {
     }
 
     let authStatus: string | undefined;
-    const cachedAuth = this.authorizationCache.get(idTag);
-    if (cachedAuth) {
-      authStatus = cachedAuth.status;
+    if (!this.authorizeRemoteTxRequests) {
+      authStatus = "Accepted";
     } else {
-      const authorize = await this.connection.call<{ idTagInfo?: { status?: string } }>(Ocpp16Action.Authorize, { idTag });
-      authStatus = authorize.idTagInfo?.status;
-      if (authStatus === "Accepted") {
-        this.authorizationCache.set(idTag, { idTag, status: "Accepted" });
+      const cachedAuth = this.authorizationCache.get(idTag);
+      if (cachedAuth) {
+        authStatus = cachedAuth.status;
+      } else {
+        const authorize = await this.connection.call<{ idTagInfo?: { status?: string } }>(Ocpp16Action.Authorize, { idTag });
+        authStatus = authorize.idTagInfo?.status;
+        if (authStatus === "Accepted") {
+          this.authorizationCache.set(idTag, { idTag, status: "Accepted" });
+        }
       }
     }
 
@@ -414,6 +422,7 @@ export class MockChargePoint {
       this.transactionId = this.lastStartTxResponse.transactionId;
       this.idTag = idTag;
       this.connectorStatus = "Charging";
+      this.scheduleMeterSampling();
       return;
     }
 
@@ -429,6 +438,9 @@ export class MockChargePoint {
 
     this.lastStartTxKey = startKey;
     this.lastStartTxResponse = { transactionId: started.transactionId };
+    // New transaction id (lab profiles often reuse the same id) must not inherit prior stop cache.
+    this.lastStopTxId = null;
+    this.lastStopTxResponse = null;
 
     this.transactionId = started.transactionId;
     this.idTag = idTag;
@@ -439,6 +451,7 @@ export class MockChargePoint {
       transactionId: this.transactionId,
       meterValue: [this.sample()],
     });
+    this.scheduleMeterSampling();
   }
 
   private remoteStop(call: InboundCall): Record<string, unknown> {
@@ -459,6 +472,7 @@ export class MockChargePoint {
     if (transactionId === null) {
       return;
     }
+    this.stopMeterSampling();
 
     if (this.lastStopTxId === transactionId && this.lastStopTxResponse) {
       this.transactionId = null;
@@ -766,6 +780,14 @@ export class MockChargePoint {
     if (!key || value === undefined) {
       return { status: "Rejected" };
     }
+    const known = this.configuration().find((entry) => entry.key === key);
+    if (!known) {
+      return { status: "NotSupported" };
+    }
+    if (known.readonly) {
+      return { status: "Rejected" };
+    }
+
     if (key === "HeartbeatInterval") {
       const interval = Number(value);
       if (!Number.isInteger(interval) || interval < 0) {
@@ -775,13 +797,27 @@ export class MockChargePoint {
       this.scheduleHeartbeat();
       return { status: "Accepted" };
     }
-    const known = this.configuration().find((entry) => entry.key === key);
-    if (!known) {
-      return { status: "NotSupported" };
+
+    if (key === "MeterValueSampleInterval") {
+      const interval = Number(value);
+      if (!Number.isInteger(interval) || interval < 0) {
+        return { status: "Rejected" };
+      }
+      this.meterValueSampleInterval = interval;
+      if (this.transactionId !== null) {
+        this.scheduleMeterSampling();
+      }
+      return { status: "Accepted" };
     }
-    if (known.readonly) {
-      return { status: "Rejected" };
+
+    if (key === "AuthorizeRemoteTxRequests") {
+      if (value !== "true" && value !== "false") {
+        return { status: "Rejected" };
+      }
+      this.authorizeRemoteTxRequests = value === "true";
+      return { status: "Accepted" };
     }
+
     return { status: "Accepted" };
   }
 
@@ -797,10 +833,38 @@ export class MockChargePoint {
   private configuration(): ConfigurationKey[] {
     return [
       { key: "HeartbeatInterval", readonly: false, value: String(this.heartbeatInterval) },
-      { key: "MeterValueSampleInterval", readonly: false, value: "10" },
+      { key: "MeterValueSampleInterval", readonly: false, value: String(this.meterValueSampleInterval) },
       { key: "NumberOfConnectors", readonly: true, value: "1" },
-      { key: "AuthorizeRemoteTxRequests", readonly: false, value: "true" },
+      { key: "AuthorizeRemoteTxRequests", readonly: false, value: this.authorizeRemoteTxRequests ? "true" : "false" },
     ];
+  }
+
+  private scheduleMeterSampling(): void {
+    this.stopMeterSampling();
+    if (this.meterValueSampleInterval <= 0 || this.transactionId === null) {
+      return;
+    }
+    this.meterSampleTimer = setInterval(() => {
+      if (this.transactionId === null) {
+        this.stopMeterSampling();
+        return;
+      }
+      this.meterWh += 50;
+      void this.connection
+        .call(Ocpp16Action.MeterValues, {
+          connectorId: this.connectorId,
+          transactionId: this.transactionId,
+          meterValue: [this.sample()],
+        })
+        .catch(() => undefined);
+    }, this.meterValueSampleInterval * 1000);
+  }
+
+  private stopMeterSampling(): void {
+    if (this.meterSampleTimer) {
+      clearInterval(this.meterSampleTimer);
+      this.meterSampleTimer = undefined;
+    }
   }
 
   private scheduleHeartbeat(): void {

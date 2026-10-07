@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "name": "default-ocpp16",
+  "parameters": {
+    "connectorId": 1,
+    "idTag": "TEST-TAG-001",
+    "transactionId": 1001,
+    "configurationKey": "HeartbeatInterval",
+    "configurationTestValue": "45",
+    "callTimeoutMs": 10000,
+    "eventTimeoutMs": 15000,
+    "simulatorDelayMs": 300,
+    "simulatorTimeoutMs": 500
+  }
+}

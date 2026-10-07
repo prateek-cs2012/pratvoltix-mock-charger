@@ -1,0 +1,11 @@
+node_modules
+dist
+.angular
+out-tsc
+coverage
+*.tsbuildinfo
+.env
+.DS_Store
+artifacts/
+
+.pnpm-store/

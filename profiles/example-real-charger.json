@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1",
+  "name": "example-real-charger",
+  "parameters": {
+    "connectorId": 1,
+    "idTag": "LAB-CARD-002",
+    "transactionId": 2001,
+    "configurationKey": "HeartbeatInterval",
+    "configurationTestValue": "30",
+    "callTimeoutMs": 15000,
+    "eventTimeoutMs": 20000,
+    "simulatorDelayMs": 300,
+    "simulatorTimeoutMs": 800
+  }
+}

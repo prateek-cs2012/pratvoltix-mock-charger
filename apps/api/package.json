@@ -1,0 +1,31 @@
+{
+  "name": "@pratvoltix/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pratvoltix/ocpp": "workspace:*",
+    "@pratvoltix/simulator-control": "workspace:*",
+    "@pratvoltix/test-cases": "workspace:*",
+    "@pratvoltix/test-runner": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^5.2.1",
+    "mongoose": "^9.10.4",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.3"
+  }
+}

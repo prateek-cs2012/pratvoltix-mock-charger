@@ -143,7 +143,7 @@ describe("single OCPP socket", () => {
 });
 
 describe("state persistence across reconnects", () => {
-  it("persists state when socket closes", async () => {
+  it("persists state when socket closes unexpectedly", async () => {
     const sockets: FakeSocket[] = [];
     const notes: Array<{ action: string; payload: unknown }> = [];
     const harness = sessionWith(sockets, notes);
@@ -157,6 +157,43 @@ describe("state persistence across reconnects", () => {
     const persistedState = harness.session.getPersistedState();
     expect(persistedState).toBeDefined();
     expect(persistedState?.connectorStatus).toBe("Available");
+    harness.session.stop();
+  });
+
+  it("clears persisted state on intentional connect to external target", async () => {
+    const sockets: FakeSocket[] = [];
+    const notes: Array<{ action: string; payload: unknown }> = [];
+    const harness = sessionWith(sockets, notes);
+    harness.session.start();
+    await flush();
+    harness.openLatest();
+    await flush();
+    sockets[0]!.close();
+    await flush();
+    expect(harness.session.getPersistedState()).toBeDefined();
+    
+    const connectPromise = harness.session.connect("ws://external.example/ocpp/CP001");
+    expect(harness.session.getPersistedState()).toBeUndefined();
+    await flush();
+    harness.openLatest();
+    await connectPromise;
+    harness.session.stop();
+  });
+
+  it("clears persisted state on intentional disconnect", async () => {
+    const sockets: FakeSocket[] = [];
+    const notes: Array<{ action: string; payload: unknown }> = [];
+    const harness = sessionWith(sockets, notes);
+    harness.session.start();
+    await flush();
+    harness.openLatest();
+    await flush();
+    sockets[0]!.close();
+    await flush();
+    expect(harness.session.getPersistedState()).toBeDefined();
+    
+    await harness.session.disconnect(false);
+    expect(harness.session.getPersistedState()).toBeUndefined();
     harness.session.stop();
   });
 });

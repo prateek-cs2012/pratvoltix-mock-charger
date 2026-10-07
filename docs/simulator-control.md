@@ -20,7 +20,7 @@ Requests and responses share a `requestId`:
 { "type": "response", "requestId": "abc", "ok": true, "payload": {} }
 ```
 
-Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`.
+Actions: `hello`, `arm-fault`, `clear-fault`, `clear-all-faults`, `list-faults`, `get-status`, `set-reconnect-storm`, `clear-reconnect-storm`.
 
 The mock charger sends `hello` after it connects:
 
@@ -62,6 +62,32 @@ Effects in this milestone:
 `occurrence` defaults to the next matching call (`1`). Rules are checked in arm order. A call increments the occurrence count of each matching rule until one reaches its occurrence; that rule is consumed and later calls do not see it. Active rule ids must be unique. At most 16 rules can be armed. There is no callback or expression language.
 
 Fault state is memory only. Restarting the mock charger drops it.
+
+## Reconnect storm
+
+The `set-reconnect-storm` and `clear-reconnect-storm` actions configure burst reconnection behavior for CSMS resilience testing. Unlike fault rules, reconnect storm configuration is not tied to a specific OCPP action and persists until explicitly cleared.
+
+```json
+{ "type": "request", "requestId": "storm1", "action": "set-reconnect-storm", "payload": {
+  "burstCount": 5,
+  "burstDelayMs": 100,
+  "intervalMs": 2000
+}}
+```
+
+| Field | Description |
+| --- | --- |
+| `burstCount` | Number of rapid reconnections per burst (1–100) |
+| `burstDelayMs` | Delay between reconnections within a burst (0–30000ms) |
+| `intervalMs` | Delay before starting the next burst cycle (0–30000ms) |
+
+When a reconnect storm is configured, after each socket close the simulator reconnects with `burstDelayMs` delay until `burstCount` reconnections have occurred. Then it waits `intervalMs` before starting the next burst. The storm continues until `clear-reconnect-storm` is called.
+
+```json
+{ "type": "request", "requestId": "storm2", "action": "clear-reconnect-storm", "payload": {} }
+```
+
+Reconnect storm configuration is independent of fault rules. Clearing faults does not clear the storm. The storm is memory only and resets when the mock charger restarts.
 
 ## Cleanup
 

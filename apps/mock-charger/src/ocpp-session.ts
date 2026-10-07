@@ -83,6 +83,7 @@ export class OcppSession {
   async connect(url: string): Promise<{ state: "connected"; subprotocol: string }> {
     this.holdingExternal = true;
     this.clearReconnect();
+    this.persistedState = undefined;
     await this.settleClose();
     return this.open(url, true);
   }
@@ -90,6 +91,7 @@ export class OcppSession {
   async disconnect(restoreBootstrap: boolean): Promise<{ state: "disconnected" }> {
     this.holdingExternal = !restoreBootstrap;
     this.clearReconnect();
+    this.persistedState = undefined;
     await this.settleClose();
     await this.notifyState({ state: "disconnected" });
     if (restoreBootstrap && !this.stopped) {
@@ -268,18 +270,13 @@ export class OcppSession {
       return;
     }
     let delayMs = 2_000;
-    if (this.reconnectStorm && this.stormBurstRemaining > 0) {
-      delayMs = this.reconnectStorm.burstDelayMs;
-      this.stormBurstRemaining -= 1;
-      if (this.stormBurstRemaining === 0) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = undefined;
-          this.stormBurstRemaining = this.reconnectStorm?.burstCount ?? 0;
-          void this.open(this.options.bootstrapUrl, false).catch((error: unknown) => {
-            this.logIssue(error);
-          });
-        }, this.reconnectStorm.intervalMs);
-        return;
+    if (this.reconnectStorm) {
+      if (this.stormBurstRemaining > 0) {
+        delayMs = this.reconnectStorm.burstDelayMs;
+        this.stormBurstRemaining -= 1;
+      } else {
+        delayMs = this.reconnectStorm.intervalMs;
+        this.stormBurstRemaining = this.reconnectStorm.burstCount;
       }
     }
     this.reconnectTimer = setTimeout(() => {

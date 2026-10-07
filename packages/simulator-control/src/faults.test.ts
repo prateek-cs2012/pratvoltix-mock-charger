@@ -40,42 +40,13 @@ describe("validateReconnectStormConfig", () => {
   });
 });
 
-describe("validateFaultRule with reconnect-storm effect", () => {
-  it("accepts valid reconnect-storm effect", () => {
-    const rule = validateFaultRule({
-      id: "storm-test",
-      consume: "once",
-      match: { action: "BootNotification", occurrence: 1 },
-      effect: { type: "reconnect-storm", burstCount: 5, burstDelayMs: 100, intervalMs: 1000 },
-    });
-    expect(rule.effect.type).toBe("reconnect-storm");
-    if (rule.effect.type === "reconnect-storm") {
-      expect(rule.effect.burstCount).toBe(5);
-      expect(rule.effect.burstDelayMs).toBe(100);
-      expect(rule.effect.intervalMs).toBe(1000);
-    }
-  });
-
-  it("rejects reconnect-storm with invalid parameters", () => {
+describe("validateFaultRule rejects unsupported effects", () => {
+  it("rejects unknown effect type", () => {
     expect(() => validateFaultRule({
-      id: "storm-bad",
+      id: "bad-effect",
       consume: "once",
       match: { action: "BootNotification" },
-      effect: { type: "reconnect-storm", burstCount: 0, burstDelayMs: 100, intervalMs: 1000 },
-    })).toThrow(/burstCount/);
-
-    expect(() => validateFaultRule({
-      id: "storm-bad",
-      consume: "once",
-      match: { action: "BootNotification" },
-      effect: { type: "reconnect-storm", burstCount: 5, burstDelayMs: -1, intervalMs: 1000 },
-    })).toThrow(/burstDelayMs/);
-
-    expect(() => validateFaultRule({
-      id: "storm-bad",
-      consume: "once",
-      match: { action: "BootNotification" },
-      effect: { type: "reconnect-storm", burstCount: 5, burstDelayMs: 100, intervalMs: 50000 },
-    })).toThrow(/intervalMs/);
+      effect: { type: "unknown-effect" },
+    })).toThrow(/unsupported effect/);
   });
 });

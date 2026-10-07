@@ -10,8 +10,7 @@ export type FaultEffect =
   | { type: "call-result"; payload: Record<string, unknown> }
   | { type: "call-error"; errorCode: string; description: string; details?: Record<string, unknown> }
   | { type: "suppress-response" }
-  | { type: "disconnect" }
-  | { type: "reconnect-storm"; burstCount: number; burstDelayMs: number; intervalMs: number };
+  | { type: "disconnect" };
 
 export interface FaultRule {
   id: string;
@@ -182,18 +181,6 @@ function validateEffect(id: string, effect: unknown): FaultEffect {
   if (record.type === "disconnect") {
     return { type: "disconnect" };
   }
-  if (record.type === "reconnect-storm") {
-    if (typeof record.burstCount !== "number" || !Number.isInteger(record.burstCount) || record.burstCount < 1 || record.burstCount > 100) {
-      throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" burstCount must be an integer from 1 to 100.`);
-    }
-    if (typeof record.burstDelayMs !== "number" || !Number.isInteger(record.burstDelayMs) || record.burstDelayMs < 0 || record.burstDelayMs > MAX_DELAY_MS) {
-      throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" burstDelayMs must be an integer from 0 to ${MAX_DELAY_MS}.`);
-    }
-    if (typeof record.intervalMs !== "number" || !Number.isInteger(record.intervalMs) || record.intervalMs < 0 || record.intervalMs > MAX_DELAY_MS) {
-      throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" intervalMs must be an integer from 0 to ${MAX_DELAY_MS}.`);
-    }
-    return { type: "reconnect-storm", burstCount: record.burstCount, burstDelayMs: record.burstDelayMs, intervalMs: record.intervalMs };
-  }
   throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" has an unsupported effect.`);
 }
 
@@ -203,8 +190,7 @@ function isEffectType(value: string): value is FaultEffect["type"] {
     value === "call-result" ||
     value === "call-error" ||
     value === "suppress-response" ||
-    value === "disconnect" ||
-    value === "reconnect-storm"
+    value === "disconnect"
   );
 }
 

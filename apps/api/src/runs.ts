@@ -110,6 +110,7 @@ export async function executeRun(
   const collector = new RunTraceCollector(session.connection);
   collector.start();
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
+  const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
   try {
     const report = await runPlan({
       steps: planSteps(run),
@@ -120,6 +121,7 @@ export async function executeRun(
         chargePointId: identity,
         profile,
         ...(simulator ? { simulator } : {}),
+        ...(reconnectStormController ? { reconnectStormController } : {}),
       }),
       lifecycle: {
         onCaseStart(step) {
@@ -326,6 +328,7 @@ async function runStoredPlan(
     return;
   }
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
+  const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
   const report = await runPlan({
     steps: planSteps(run),
     cases: testCases,
@@ -335,6 +338,7 @@ async function runStoredPlan(
       chargePointId: identity,
       profile,
       ...(simulator ? { simulator } : {}),
+      ...(reconnectStormController ? { reconnectStormController } : {}),
     }),
     lifecycle: {
       onCaseStart(step) {

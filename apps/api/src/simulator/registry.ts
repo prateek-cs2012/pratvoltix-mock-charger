@@ -2,10 +2,13 @@ import {
   ControlProtocolError,
   readClearFaultResult,
   readFaultSummaries,
+  validateReconnectStormConfig,
   type ControlChannel,
   type FaultRule,
   type FaultSummary,
   type HelloPayload,
+  type ReconnectStormConfig,
+  type ReconnectStormController,
   type SimulatorController,
 } from "@pratvoltix/simulator-control";
 
@@ -119,6 +122,21 @@ export class SimulatorRegistry {
         session.faults = [];
       },
       listFaults: async () => this.refreshFaults(session),
+    };
+  }
+
+  reconnectStormController(identity: string): ReconnectStormController {
+    const session = this.requireConnected(identity);
+    return {
+      setReconnectStorm: async (config: ReconnectStormConfig) => {
+        const validated = validateReconnectStormConfig(config);
+        await session.channel.request("set-reconnect-storm", validated);
+        session.lastSeenAt = new Date().toISOString();
+      },
+      clearReconnectStorm: async () => {
+        await session.channel.request("clear-reconnect-storm", {});
+        session.lastSeenAt = new Date().toISOString();
+      },
     };
   }
 

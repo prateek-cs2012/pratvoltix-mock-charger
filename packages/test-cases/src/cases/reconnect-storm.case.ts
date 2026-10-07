@@ -25,53 +25,55 @@ export const reconnectStormCase = defineTestCase<OcppTestContext>({
       intervalMs: 2000,
     });
 
-    let bootCount = 0;
-    const bootPromises: Array<Promise<void>> = [];
-
-    for (let i = 0; i < 5; i++) {
-      bootPromises.push(
-        ctx.peer
-          .waitFor(Ocpp16Action.BootNotification, eventTimeoutMs)
-          .then((call) => {
-            bootCount += 1;
-            call.reply({ status: "Accepted", currentTime: new Date().toISOString(), interval: 300 });
-            ctx.log(`BootNotification #${bootCount} received and accepted`);
-          })
-          .catch(() => {
-            // Connection close / slice timeout while storming — live peer retries; ignore stray rejects.
-          }),
-      );
-    }
-
-    // Soft Reset closes the socket; with storm armed the session will burst-reconnect.
-    ctx.log("Triggering Soft Reset to initiate storm reconnect sequence");
-    await ctx.peer.call(Ocpp16Action.Reset, { type: "Soft" }, 1000).catch(() => undefined);
-
-    await waitFor(3500);
-
-    const received = bootCount;
-    ctx.log(`Received ${received} BootNotifications during storm period`);
-    assert(received >= 2, `Expected at least 2 BootNotifications during reconnect storm, got ${received}`);
-
-    ctx.log("Clearing reconnect storm configuration");
-    await stormController.clearReconnectStorm();
-    await Promise.allSettled(bootPromises);
-
-    // Allow one settle Boot/Status after storm clears (may already have been counted).
     try {
-      const finalBoot = await ctx.peer.waitFor(Ocpp16Action.BootNotification, Math.min(eventTimeoutMs, 3000));
-      finalBoot.reply({ status: "Accepted", currentTime: new Date().toISOString(), interval: 300 });
-    } catch {
-      ctx.log("No extra Boot after clear (already settled)");
-    }
+      let bootCount = 0;
+      const bootPromises: Array<Promise<void>> = [];
 
-    try {
-      const finalStatus = await ctx.peer.waitFor(Ocpp16Action.StatusNotification, Math.min(eventTimeoutMs, 3000));
-      finalStatus.reply({});
-    } catch {
-      ctx.log("No StatusNotification after settle");
-    }
+      for (let i = 0; i < 5; i++) {
+        bootPromises.push(
+          ctx.peer
+            .waitFor(Ocpp16Action.BootNotification, eventTimeoutMs)
+            .then((call) => {
+              bootCount += 1;
+              call.reply({ status: "Accepted", currentTime: new Date().toISOString(), interval: 300 });
+              ctx.log(`BootNotification #${bootCount} received and accepted`);
+            })
+            .catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              ctx.log(`Boot waiter ended: ${message}`);
+            }),
+        );
+      }
 
-    ctx.log("Charge point stabilized after storm");
+      ctx.log("Triggering Soft Reset to initiate storm reconnect sequence");
+      await ctx.peer.call(Ocpp16Action.Reset, { type: "Soft" }, 1000).catch(() => undefined);
+
+      await waitFor(3500);
+
+      const received = bootCount;
+      ctx.log(`Received ${received} BootNotifications during storm period`);
+      assert(received >= 2, `Expected at least 2 BootNotifications during reconnect storm, got ${received}`);
+
+      await Promise.allSettled(bootPromises);
+
+      try {
+        const finalBoot = await ctx.peer.waitFor(Ocpp16Action.BootNotification, Math.min(eventTimeoutMs, 3000));
+        finalBoot.reply({ status: "Accepted", currentTime: new Date().toISOString(), interval: 300 });
+      } catch {
+        ctx.log("No extra Boot after clear (already settled)");
+      }
+
+      try {
+        const finalStatus = await ctx.peer.waitFor(Ocpp16Action.StatusNotification, Math.min(eventTimeoutMs, 3000));
+        finalStatus.reply({});
+      } catch {
+        ctx.log("No StatusNotification after settle");
+      }
+
+      ctx.log("Charge point stabilized after storm");
+    } finally {
+      ctx.log("Clearing reconnect storm configuration");
+      await stormController.clearReconnectStorm();
+    }
   },
 });

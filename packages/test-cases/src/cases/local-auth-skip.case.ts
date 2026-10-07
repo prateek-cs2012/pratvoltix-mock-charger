@@ -27,6 +27,12 @@ export const localAuthSkipCase = defineTestCase<OcppTestContext>({
       // Expected: no Authorize call
     });
 
+    const chargingPromise = ctx.peer.waitFor(
+      Ocpp16Action.StatusNotification,
+      eventTimeoutMs,
+      (p) => readString(p, "status") === "Charging",
+    );
+
     const remoteStart = await ctx.peer.call<{ status: string }>(
       Ocpp16Action.RemoteStartTransaction,
       { connectorId, idTag },
@@ -41,14 +47,21 @@ export const localAuthSkipCase = defineTestCase<OcppTestContext>({
     await authorizeListener;
     assert(!authorizeReceived, "Authorize should NOT have been called because idTag is in local auth list");
 
-    await ctx.peer.waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Charging").then((c) => c.reply({}));
+    const charging = await chargingPromise;
+    charging.reply({});
 
     const stopTx = ctx.peer.waitFor(Ocpp16Action.StopTransaction, eventTimeoutMs);
+    const availablePromise = ctx.peer.waitFor(
+      Ocpp16Action.StatusNotification,
+      eventTimeoutMs,
+      (p) => readString(p, "status") === "Available",
+    );
     await ctx.peer.call(Ocpp16Action.RemoteStopTransaction, { transactionId }, callTimeoutMs);
     const stopped = await stopTx;
     stopped.reply({ idTagInfo: { status: "Accepted" } });
 
-    await ctx.peer.waitFor(Ocpp16Action.StatusNotification, eventTimeoutMs, (p) => readString(p, "status") === "Available").then((c) => c.reply({}));
+    const available = await availablePromise;
+    available.reply({});
 
     await extended.setLocalAuthList([]);
     ctx.log("Local auth list cleared");

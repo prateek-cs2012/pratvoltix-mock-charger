@@ -10,7 +10,8 @@ export type FaultEffect =
   | { type: "call-result"; payload: Record<string, unknown> }
   | { type: "call-error"; errorCode: string; description: string; details?: Record<string, unknown> }
   | { type: "suppress-response" }
-  | { type: "disconnect" };
+  | { type: "disconnect" }
+  | { type: "malformed-response"; rawPayload: string };
 
 export interface FaultRule {
   id: string;
@@ -181,6 +182,12 @@ function validateEffect(id: string, effect: unknown): FaultEffect {
   if (record.type === "disconnect") {
     return { type: "disconnect" };
   }
+  if (record.type === "malformed-response") {
+    if (typeof record.rawPayload !== "string" || record.rawPayload.length === 0 || record.rawPayload.length > MAX_PAYLOAD_JSON) {
+      throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" rawPayload must be a non-empty string up to ${MAX_PAYLOAD_JSON} characters.`);
+    }
+    return { type: "malformed-response", rawPayload: record.rawPayload };
+  }
   throw new ControlProtocolError("invalid-rule", `Fault rule "${id}" has an unsupported effect.`);
 }
 
@@ -190,7 +197,8 @@ function isEffectType(value: string): value is FaultEffect["type"] {
     value === "call-result" ||
     value === "call-error" ||
     value === "suppress-response" ||
-    value === "disconnect"
+    value === "disconnect" ||
+    value === "malformed-response"
   );
 }
 

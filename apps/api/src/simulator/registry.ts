@@ -140,6 +140,44 @@ export class SimulatorRegistry {
     };
   }
 
+  async setOutboundDelay(identity: string, delayMs: number): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("set-outbound-delay", { delayMs });
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async clearOutboundDelay(identity: string): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("clear-outbound-delay", {});
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async setLocalAuthList(identity: string, entries: Array<{ idTag: string; status: string; expiryDate?: string }>): Promise<void> {
+    const session = this.requireConnected(identity);
+    await session.channel.request("set-local-auth-list", { entries });
+    session.lastSeenAt = new Date().toISOString();
+  }
+
+  async getLocalAuthList(identity: string): Promise<Array<{ idTag: string; status: string; expiryDate?: string }>> {
+    const session = this.requireConnected(identity);
+    const payload = await session.channel.request("get-local-auth-list", {});
+    session.lastSeenAt = new Date().toISOString();
+    if (typeof payload !== "object" || payload === null || !Array.isArray((payload as { entries?: unknown }).entries)) {
+      return [];
+    }
+    return (payload as { entries: Array<{ idTag: string; status: string; expiryDate?: string }> }).entries;
+  }
+
+  async uploadOfflineTransactions(identity: string): Promise<number> {
+    const session = this.requireConnected(identity);
+    const payload = await session.channel.request("upload-offline-transactions", {});
+    session.lastSeenAt = new Date().toISOString();
+    if (typeof payload !== "object" || payload === null || typeof (payload as { uploaded?: unknown }).uploaded !== "number") {
+      return 0;
+    }
+    return (payload as { uploaded: number }).uploaded;
+  }
+
   async ensureClean(identity: string): Promise<void> {
     const session = this.requireConnected(identity);
     try {

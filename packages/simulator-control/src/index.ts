@@ -58,3 +58,29 @@ export interface ReconnectStormController {
   setReconnectStorm(config: ReconnectStormConfig): Promise<void>;
   clearReconnectStorm(): Promise<void>;
 }
+
+export interface LocalAuthEntry {
+  idTag: string;
+  status: string;
+  expiryDate?: string;
+}
+
+export interface OfflineTransactionEntry {
+  localId: number;
+  connectorId: number;
+  idTag: string;
+  meterStart: number;
+  meterStop: number;
+  startTimestamp: string;
+  stopTimestamp: string;
+  reason: string;
+}
+
+export interface ExtendedSimulatorController {
+  setOutboundDelay(delayMs: number): Promise<void>;
+  clearOutboundDelay(): Promise<void>;
+  setLocalAuthList(entries: LocalAuthEntry[]): Promise<void>;
+  getLocalAuthList(): Promise<LocalAuthEntry[]>;
+  queueOfflineTransaction(tx: OfflineTransactionEntry): Promise<void>;
+  uploadOfflineTransactions(): Promise<number>;
+}

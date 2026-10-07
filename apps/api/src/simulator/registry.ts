@@ -4,9 +4,12 @@ import {
   readFaultSummaries,
   validateReconnectStormConfig,
   type ControlChannel,
+  type ExtendedSimulatorController,
   type FaultRule,
   type FaultSummary,
   type HelloPayload,
+  type LocalAuthEntry,
+  type OfflineTransactionEntry,
   type ReconnectStormConfig,
   type ReconnectStormController,
   type SimulatorController,
@@ -136,6 +139,32 @@ export class SimulatorRegistry {
       clearReconnectStorm: async () => {
         await session.channel.request("clear-reconnect-storm", {});
         session.lastSeenAt = new Date().toISOString();
+      },
+    };
+  }
+
+  extendedSimulatorController(identity: string): ExtendedSimulatorController {
+    const registry = this;
+    return {
+      setOutboundDelay: async (delayMs: number) => {
+        await registry.setOutboundDelay(identity, delayMs);
+      },
+      clearOutboundDelay: async () => {
+        await registry.clearOutboundDelay(identity);
+      },
+      setLocalAuthList: async (entries: LocalAuthEntry[]) => {
+        await registry.setLocalAuthList(identity, entries);
+      },
+      getLocalAuthList: async () => {
+        return registry.getLocalAuthList(identity);
+      },
+      queueOfflineTransaction: async (tx: OfflineTransactionEntry) => {
+        const session = registry.requireConnected(identity);
+        await session.channel.request("queue-offline-transaction", tx);
+        session.lastSeenAt = new Date().toISOString();
+      },
+      uploadOfflineTransactions: async () => {
+        return registry.uploadOfflineTransactions(identity);
       },
     };
   }

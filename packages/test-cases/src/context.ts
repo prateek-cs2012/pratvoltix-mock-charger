@@ -1,4 +1,4 @@
-import type { SimulatorController, ReconnectStormController } from "@pratvoltix/simulator-control";
+import type { SimulatorController, ReconnectStormController, ExtendedSimulatorController } from "@pratvoltix/simulator-control";
 import type { OcppPeer } from "@pratvoltix/ocpp";
 import type { TestContext } from "@pratvoltix/test-runner";
 import type { EffectiveOcppRunProfile } from "./profile.js";
@@ -9,6 +9,7 @@ export interface OcppTestContext extends TestContext {
   profile: EffectiveOcppRunProfile;
   simulator?: SimulatorController;
   reconnectStormController?: ReconnectStormController;
+  extendedSimulator?: ExtendedSimulatorController;
 }
 
 export function requireSimulator(ctx: OcppTestContext): SimulatorController {
@@ -23,4 +24,11 @@ export function requireReconnectStormController(ctx: OcppTestContext): Reconnect
     throw new Error("Reconnect storm controller is missing. Capability reconnect-storm was not established for this run.");
   }
   return ctx.reconnectStormController;
+}
+
+export function requireExtendedSimulator(ctx: OcppTestContext): ExtendedSimulatorController {
+  if (!ctx.extendedSimulator) {
+    throw new Error("Extended simulator controller is missing. Capability simulator-control was not established for this run.");
+  }
+  return ctx.extendedSimulator;
 }

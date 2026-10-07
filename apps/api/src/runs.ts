@@ -111,6 +111,7 @@ export async function executeRun(
   collector.start();
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
   const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
+  const extendedSimulator = needsSimulator ? simulators?.extendedSimulatorController(identity) : undefined;
   try {
     const report = await runPlan({
       steps: planSteps(run),
@@ -122,6 +123,7 @@ export async function executeRun(
         profile,
         ...(simulator ? { simulator } : {}),
         ...(reconnectStormController ? { reconnectStormController } : {}),
+        ...(extendedSimulator ? { extendedSimulator } : {}),
       }),
       lifecycle: {
         onCaseStart(step) {
@@ -329,6 +331,7 @@ async function runStoredPlan(
   }
   const simulator = needsSimulator ? simulators?.controller(identity) : undefined;
   const reconnectStormController = needsSimulator ? simulators?.reconnectStormController(identity) : undefined;
+  const extendedSimulator = needsSimulator ? simulators?.extendedSimulatorController(identity) : undefined;
   const report = await runPlan({
     steps: planSteps(run),
     cases: testCases,
@@ -339,6 +342,7 @@ async function runStoredPlan(
       profile,
       ...(simulator ? { simulator } : {}),
       ...(reconnectStormController ? { reconnectStormController } : {}),
+      ...(extendedSimulator ? { extendedSimulator } : {}),
     }),
     lifecycle: {
       onCaseStart(step) {

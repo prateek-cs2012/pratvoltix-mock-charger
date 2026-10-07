@@ -142,7 +142,7 @@ The `queue-offline-transaction` and `upload-offline-transactions` actions manage
 
 ```json
 { "type": "request", "requestId": "offline1", "action": "queue-offline-transaction", "payload": {
-  "transactionId": 1001,
+  "localId": 1,
   "connectorId": 1,
   "idTag": "RFID001",
   "meterStart": 1000,
@@ -155,7 +155,7 @@ The `queue-offline-transaction` and `upload-offline-transactions` actions manage
 
 | Field | Description |
 | --- | --- |
-| `transactionId` | Integer transaction identifier |
+| `localId` | Local queue identifier (for deduplication; not sent to CSMS) |
 | `connectorId` | Connector where the transaction occurred |
 | `idTag` | RFID tag that authorized the transaction |
 | `meterStart` | Meter reading at transaction start (Wh) |
@@ -171,6 +171,12 @@ After reconnection, call `upload-offline-transactions` to replay queued transact
 ```
 
 Returns `{ "uploaded": N }` where N is the count of successfully uploaded transactions. Transactions are uploaded in order; upload stops at the first failure.
+
+**OCPP transactionId handling**: The queue stores a `localId` for queue identity only. On upload, `StartTransaction` is sent and the CSMS-assigned `transactionId` from `StartTransaction.conf` is used for the subsequent `StopTransaction`. This matches real OCPP 1.6 behavior where the CSMS allocates transaction identifiers.
+
+## ClearCache vs Local Authorization List
+
+The OCPP `ClearCache` command clears only the **Authorization Cache** (runtime cache of Authorize responses), not the **Local Authorization List** (entries from `SendLocalList`). This matches OCPP 1.6 specification: the Authorization Cache is a performance optimization, while the Local Authorization List is persistent configuration managed by the CSMS.
 
 ## Duplicate message handling (Gap 2)
 

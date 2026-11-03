@@ -126,9 +126,11 @@ Energy is `kW × dt`, from the charger's type and rated power, set per mock with
 
 - AC: rated power with ±1% jitter.
 - DC: rated power with ±2% jitter for 10 min, then tapers 2% of rated per minute down to 60% of rated.
-- Power never exceeds rated. No energy accrues while `SuspendedEV` / `SuspendedEVSE`.
+- Power never exceeds rated: at full power, jitter is spread below rated rather than clipped. No energy accrues while `SuspendedEV` / `SuspendedEVSE`.
+- The register keeps fractional Wh across a reconnect (`meterWhExact` in the saved state).
 - Each MeterValues carries `Energy.Active.Import.Register` (integer Wh) and `Power.Active.Import` (W), with `context` `Transaction.Begin`, `Sample.Periodic` or `Trigger`. No `SoC` is sent (the CSMS stops a session at SoC ≥ 100).
 - `StopTransaction.meterStop` is the register reading at stop (no synthetic top-up).
+- If the socket drops after `Finishing` but before `StopTransaction` is acknowledged, the stop is resent once on reconnect with the original `meterStop` and reason (falls back to `Local` for older saved state).
 
 Scenario **`configuration`**: `get-configuration`, `change-configuration`, `config-meter-realism`.
 

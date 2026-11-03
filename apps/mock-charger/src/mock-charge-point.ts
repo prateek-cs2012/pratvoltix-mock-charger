@@ -25,6 +25,16 @@ export interface ChargePointState {
   idTag: string | null;
   /** Epoch ms when the active transaction started; keeps the auto-stop deadline across reconnects. */
   transactionStartedAt?: number | null;
+  /**
+   * Exact meter energy in Wh, including the fractional part that `meterWh` rounds down.
+   * Optional so older saved state (integer `meterWh` only) still loads.
+   */
+  meterWhExact?: number;
+  /**
+   * StopTransaction.reason of a stop that was in flight (connector Finishing) when the socket
+   * dropped. On reconnect the stop is resent with this reason.
+   */
+  pendingStopReason?: string | null;
 }
 
 export interface OfflineTransaction {
@@ -90,6 +100,8 @@ export class MockChargePoint {
   private transactionStartedAt: number | null;
   private lastMeterTickAt: number | null = null;
   private stopInFlight: Promise<void> | null = null;
+  /** Reason of the stop in progress; persisted so a stop cut off mid-way resumes with it. */
+  private pendingStopReason: string | null;
   private readonly connectorId: number;
 
   private lastStartTxKey: string | null = null;
@@ -117,13 +129,14 @@ export class MockChargePoint {
     const initialState = options.initialState;
     this.transactionId = initialState?.transactionId ?? null;
     this.connectorStatus = initialState?.connectorStatus ?? "Available";
-    this.meter = new MeterModel(initialState?.meterWh ?? 1_000, {
+    this.meter = new MeterModel(restoredMeterWh(initialState), {
       ...(options.chargerType ? { chargerType: options.chargerType } : {}),
       ...(options.ratedPowerKw !== undefined ? { ratedPowerKw: options.ratedPowerKw } : {}),
       ...(options.random ? { random: options.random } : {}),
     });
     this.idTag = initialState?.idTag ?? null;
     this.transactionStartedAt = this.transactionId === null ? null : (initialState?.transactionStartedAt ?? null);
+    this.pendingStopReason = this.transactionId === null ? null : (initialState?.pendingStopReason ?? null);
     const sampleInterval = options.meterValueSampleInterval;
     this.meterValueSampleInterval =
       sampleInterval !== undefined && Number.isInteger(sampleInterval) && sampleInterval >= 0
@@ -175,6 +188,8 @@ export class MockChargePoint {
       meterWh: this.meter.registerWh,
       idTag: this.idTag,
       transactionStartedAt: this.transactionStartedAt,
+      meterWhExact: this.meter.energyWhExact,
+      pendingStopReason: this.pendingStopReason,
     };
   }
 
@@ -224,6 +239,7 @@ export class MockChargePoint {
     this.meter.idle();
     this.transactionId = null;
     this.idTag = null;
+    this.pendingStopReason = null;
     this.connectorStatus = "Available";
     this.lastStopTxId = null;
     this.lastStopTxResponse = null;
@@ -561,6 +577,8 @@ export class MockChargePoint {
     if (transactionId === null) {
       return;
     }
+    // Remember the reason so a stop cut off by a socket drop is resent with it on reconnect.
+    this.pendingStopReason = reason;
     // Bill energy up to the moment of stop, then freeze the meter.
     this.accrueEnergy();
     this.stopMeterSampling();
@@ -572,6 +590,7 @@ export class MockChargePoint {
       this.transactionId = null;
       this.idTag = null;
       this.transactionStartedAt = null;
+      this.pendingStopReason = null;
       this.connectorStatus = "Available";
       return;
     }
@@ -596,6 +615,7 @@ export class MockChargePoint {
     this.transactionId = null;
     this.idTag = null;
     this.transactionStartedAt = null;
+    this.pendingStopReason = null;
     if (this.availabilityScheduled) {
       this.availabilityScheduled = false;
       this.connectorStatus = "Unavailable";
@@ -976,9 +996,18 @@ export class MockChargePoint {
     this.scheduleAutoStop(now);
   }
 
-  /** After a reconnect, keep metering a transaction restored from persisted state. */
+  /**
+   * After a reconnect, keep metering a transaction restored from persisted state, or finish a
+   * stop that the socket drop cut off (Finishing, StopTransaction not acknowledged).
+   */
   private resumeRestoredTransaction(): void {
     if (this.transactionId === null || this.meterSampleTimer || this.stopInFlight) {
+      return;
+    }
+    if (this.connectorStatus === "Finishing") {
+      void this.finishTransaction(this.pendingStopReason ?? "Local").catch((error: unknown) => {
+        console.error("Resumed stop failed", error);
+      });
       return;
     }
     if (this.connectorStatus !== "Charging" && this.connectorStatus !== "SuspendedEV" && this.connectorStatus !== "SuspendedEVSE") {
@@ -1076,6 +1105,18 @@ export class MockChargePoint {
       ],
     };
   }
+}
+
+/** Start the meter from saved state, preferring the exact Wh when it agrees with the integer register. */
+function restoredMeterWh(state: ChargePointState | undefined): number {
+  if (!state) {
+    return 1_000;
+  }
+  const exact = state.meterWhExact;
+  if (typeof exact === "number" && Number.isFinite(exact) && exact > state.meterWh - 1e-6 && exact < state.meterWh + 1) {
+    return exact;
+  }
+  return state.meterWh;
 }
 
 function delay(ms: number): Promise<void> {

@@ -34,7 +34,34 @@ describe("MeterModel (PRAT-244 AC2)", () => {
     const high = new MeterModel(0, { chargerType: "AC", ratedPowerKw: 22, random: () => 0.9999 });
     expect(low.samplePowerKw(0)).toBeCloseTo(22 * 0.99, 6);
     expect(high.samplePowerKw(0)).toBeLessThanOrEqual(22);
-    expect(high.samplePowerKw(0)).toBeGreaterThan(21.9);
+    // Upward jitter is reflected below rated, not clipped to exactly rated.
+    expect(high.samplePowerKw(0)).toBeCloseTo(22 * (1 - 0.01 * 0.9998), 6);
+  });
+
+  it("spreads jitter below rated at full power instead of pinning samples to rated", () => {
+    const values = [0.55, 0.75, 0.95].map((r) => new MeterModel(0, { chargerType: "AC", ratedPowerKw: 22, random: () => r }).samplePowerKw(0));
+    for (const kw of values) {
+      expect(kw).toBeLessThan(22);
+      expect(kw).toBeGreaterThanOrEqual(22 * 0.99);
+    }
+    expect(new Set(values.map((kw) => kw.toFixed(6))).size).toBe(3);
+    // Below rated (DC taper) jitter still goes both ways.
+    const tapered = new MeterModel(0, { chargerType: "DC", ratedPowerKw: 60, random: () => 0.9999 });
+    expect(tapered.samplePowerKw(20 * 60_000)).toBeGreaterThan(48);
+  });
+
+  it("normalises a lower-case charger type, so 'dc' gets the DC default power", () => {
+    const meter = new MeterModel(0, { chargerType: "dc", random: MID });
+    expect(meter.chargerType).toBe("DC");
+    expect(meter.ratedPowerKw).toBe(DEFAULT_DC_RATED_KW);
+    expect(new MeterModel(0, { chargerType: "ccs2" }).chargerType).toBe("AC");
+  });
+
+  it("exposes the exact fractional energy", () => {
+    const meter = new MeterModel(1_000, { chargerType: "AC", ratedPowerKw: 7.4, random: MID });
+    meter.advance(30_000, 30_000);
+    expect(meter.registerWh).toBe(1_061);
+    expect(meter.energyWhExact).toBeCloseTo(1_061.6667, 3);
   });
 
   it("holds DC rated power early, then tapers to a floor", () => {

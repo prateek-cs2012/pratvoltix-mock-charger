@@ -18,12 +18,16 @@ interface SampledValue {
 
 const T0 = new Date("2026-11-03T10:00:00.000Z");
 
-function setup(options: Partial<MockChargePointOptions> = {}, authStatus = "Accepted") {
+function setup(options: Partial<MockChargePointOptions> = {}, authStatus = "Accepted", hangStop = false) {
   const { left, right } = linkTransports();
   const csms = new OcppConnection(left);
   const calls: Recorded[] = [];
   csms.onCall(async (call: InboundCall) => {
     calls.push({ action: call.action, payload: call.payload });
+    if (hangStop && call.action === Ocpp16Action.StopTransaction) {
+      // Socket drops before the CSMS acknowledges the stop.
+      return new Promise<never>(() => undefined);
+    }
     switch (call.action) {
       case Ocpp16Action.BootNotification:
         return { status: "Accepted", currentTime: new Date().toISOString(), interval: 0 };
@@ -305,5 +309,76 @@ describe("PRAT-244 charging session", () => {
     // one minute at 7.4 kW = 123 Wh after the restored 3000 Wh
     expect(all[0]!.payload["meterStop"]).toBe(3_123);
     chargePoint.close();
+  });
+
+  it("finishes a stop cut off by a socket drop: one StopTransaction after reconnect with the saved meterStop and reason", async () => {
+    const first = setup({ ratedPowerKw: 7.4 }, "Accepted", true);
+    await first.chargePoint.announce();
+    await remoteStart(first.csms);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await first.csms.call(Ocpp16Action.RemoteStopTransaction, { transactionId: 4242 });
+    await vi.advanceTimersByTimeAsync(0);
+    // StopTransaction went out but was never acknowledged.
+    expect(stops(first.calls)).toHaveLength(1);
+    expect(stops(first.calls)[0]!.payload).toMatchObject({ meterStop: 1_123, reason: "Remote" });
+
+    // Socket drops: the session saves state and drops the charge point (as OcppSession does).
+    const saved = JSON.parse(JSON.stringify(first.chargePoint.getState())) as ChargePointState;
+    first.chargePoint.close();
+    expect(saved).toMatchObject({ transactionId: 4242, connectorStatus: "Finishing", meterWh: 1_123, pendingStopReason: "Remote" });
+
+    // Time passes while offline; no energy may accrue while Finishing.
+    vi.setSystemTime(new Date(Date.now() + 5 * 60_000));
+    const second = setup({ initialState: saved, ratedPowerKw: 7.4 });
+    await second.chargePoint.announce();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const resent = stops(second.calls);
+    expect(resent).toHaveLength(1);
+    expect(resent[0]!.payload).toMatchObject({ transactionId: 4242, meterStop: 1_123, reason: "Remote" });
+    expect(second.chargePoint.getState()).toMatchObject({ transactionId: null, connectorStatus: "Available", pendingStopReason: null });
+
+    // No auto-stop or second StopTransaction later, and a new RemoteStart is accepted.
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(stops(second.calls)).toHaveLength(1);
+    await remoteStart(second.csms);
+    expect(second.chargePoint.getState().transactionId).toBe(4242);
+    second.chargePoint.close();
+  });
+
+  it("finishes a restored Finishing stop with reason Local when no reason was saved", async () => {
+    const initialState: ChargePointState = {
+      transactionId: 4242,
+      connectorStatus: "Finishing",
+      meterWh: 2_000,
+      idTag: "TAG244",
+      transactionStartedAt: T0.getTime() - 5 * 60_000,
+    };
+    const { chargePoint, calls } = setup({ initialState });
+    await chargePoint.announce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stops(calls)).toHaveLength(1);
+    expect(stops(calls)[0]!.payload).toMatchObject({ transactionId: 4242, meterStop: 2_000, reason: "Local" });
+    expect(statuses(calls).at(-1)).toBe("Available");
+    chargePoint.close();
+  });
+
+  it("keeps fractional Wh across a reconnect", async () => {
+    const first = setup({ ratedPowerKw: 7.4, autoStopMinutes: 0 });
+    await first.chargePoint.announce();
+    await remoteStart(first.csms);
+    // 7.4 kW × 30 s = 61.67 Wh
+    await vi.advanceTimersByTimeAsync(30_000);
+    const saved = JSON.parse(JSON.stringify(first.chargePoint.getState())) as ChargePointState;
+    first.chargePoint.close();
+    expect(saved.meterWh).toBe(1_061);
+    expect(saved.meterWhExact).toBeCloseTo(1_061.6667, 3);
+
+    const second = setup({ initialState: saved, ratedPowerKw: 7.4, autoStopMinutes: 0 });
+    await second.chargePoint.announce();
+    // Another 61.67 Wh: 1123.33 total, so 1123 (it would read 1122 if the 0.67 Wh were dropped).
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(second.chargePoint.getState().meterWh).toBe(1_123);
+    second.chargePoint.close();
   });
 });

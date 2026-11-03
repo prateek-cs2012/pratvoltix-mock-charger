@@ -26,7 +26,8 @@ export const DC_TAPER_FLOOR = 0.6;
 const REGISTER_EPSILON_WH = 1e-6;
 
 export interface MeterModelOptions {
-  chargerType?: ChargerType;
+  /** "AC" or "DC", case-insensitive; anything else falls back to AC. */
+  chargerType?: ChargerType | string;
   ratedPowerKw?: number;
   /** Random source in [0, 1). Injected by tests for deterministic jitter. */
   random?: () => number;
@@ -65,12 +66,18 @@ export class MeterModel {
   private lastPowerW = 0;
 
   constructor(startWh: number, options: MeterModelOptions = {}) {
-    this.chargerType = options.chargerType ?? "AC";
+    // Normalise so "dc" gets the DC profile and the DC default power, not the DC taper with AC power.
+    this.chargerType = parseChargerType(options.chargerType) ?? "AC";
     const fallback = this.chargerType === "DC" ? DEFAULT_DC_RATED_KW : DEFAULT_AC_RATED_KW;
     const rated = options.ratedPowerKw;
     this.ratedPowerKw = typeof rated === "number" && Number.isFinite(rated) && rated > 0 ? rated : fallback;
     this.random = options.random ?? Math.random;
-    this.energyWh = Math.max(0, startWh);
+    this.energyWh = Number.isFinite(startWh) ? Math.max(0, startWh) : 0;
+  }
+
+  /** Exact (fractional) energy in Wh, persisted so a reconnect does not drop the partial Wh. */
+  get energyWhExact(): number {
+    return this.energyWh;
   }
 
   /** Energy.Active.Import.Register as an integer in Wh. */
@@ -97,11 +104,17 @@ export class MeterModel {
     return this.ratedPowerKw * fraction;
   }
 
-  /** Power in kW with jitter. Never above rated power. */
+  /**
+   * Power in kW with jitter. Never above rated power: jitter that would go above rated is
+   * reflected below it, so at full power the samples spread below rated instead of being
+   * clipped to exactly rated.
+   */
   samplePowerKw(elapsedMs: number): number {
     const jitter = this.chargerType === "AC" ? AC_JITTER : DC_JITTER;
     const factor = 1 - jitter + 2 * jitter * this.random();
-    return Math.min(this.ratedPowerKw, Math.max(0, this.targetPowerKw(elapsedMs) * factor));
+    const kw = this.targetPowerKw(elapsedMs) * factor;
+    const belowRated = kw > this.ratedPowerKw ? 2 * this.ratedPowerKw - kw : kw;
+    return Math.max(0, belowRated);
   }
 
   /**

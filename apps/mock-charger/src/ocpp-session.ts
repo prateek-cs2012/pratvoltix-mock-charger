@@ -99,6 +99,7 @@ export class OcppSession {
         transactionId: null,
         idTag: null,
         connectorStatus: "Available",
+        pendingStopReason: null,
       };
     }
   }

@@ -40,7 +40,8 @@ Validated green (Mac/CSMS lab): reconnect-storm, disconnect-mid-tx, soft-reset p
 
 | Capability | Behavior | Catalog |
 | --- | --- | --- |
-| RemoteStart / RemoteStop | Full lifecycle: Authorize → StartTransaction → Charging → MeterValues → Stop → Available | `transaction-lifecycle` |
+| RemoteStart / RemoteStop | Full lifecycle: Preparing → Authorize → StartTransaction → Charging → MeterValues → Finishing → Stop → Available. Any RemoteStop for the active tx (including the CSMS `HOLD_LIMIT` stop) is Accepted and stopped with reason `Remote`. | `transaction-lifecycle`, unit (PRAT-244) |
+| Auto-stop | After `AUTO_STOP_MINUTES` (default 15; `0` disables) the tx stops with reason `Local`. Survives a reconnect. | Unit (PRAT-244) |
 | RemoteStart rejected | **Fault-injected** one-shot CallResult `Rejected` (negative suite / `withFault`) — not a natural Occupied/Unavailable reject. Native reject today is active-tx / missing `idTag` only. | `remote-start-rejected` |
 | Local cable start | Control `local-start`: Preparing → Authorize → StartTransaction → Charging (not RemoteStart) | `local-cable-start` (**Gap 8**) |
 | Local stop | Control `local-stop` with `StopTransaction.reason` (e.g. Local) + Finishing → Available | `local-cable-start` |
@@ -103,7 +104,7 @@ Mutable keys (ChangeConfiguration **Accepted** when valid; GetConfiguration refl
 | Key | Effect |
 | --- | --- |
 | `HeartbeatInterval` | Reschedules heartbeat |
-| `MeterValueSampleInterval` | Seconds between periodic MeterValues while tx active; `0` disables |
+| `MeterValueSampleInterval` | Seconds between periodic MeterValues while tx active (default `30`, env `METER_VALUE_SAMPLE_INTERVAL`); `0` disables |
 | `AuthorizeRemoteTxRequests` | `false` skips Authorize on RemoteStart |
 
 Read-only example: `NumberOfConnectors` = `1`.
@@ -111,6 +112,23 @@ Read-only example: `NumberOfConnectors` = `1`.
 Other keys: rejected / not supported as implemented (not silently ignored as applied).
 
 Periodic **MeterValues** while charging after interval is set — validated by `config-meter-realism` (**Gap 10**, PR #22 → `caa6977`).
+
+### Meter model (PRAT-244)
+
+Energy is `kW × dt`, from the charger's type and rated power, set per mock with env vars that should match the charger on the CSMS:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `CHARGER_TYPE` | `AC` | `AC` or `DC` |
+| `RATED_POWER_KW` | AC `7.4`, DC `60` | Rated power (e.g. AC 7.4 / 22, DC 30–60) |
+| `AUTO_STOP_MINUTES` | `15` | Stop with reason `Local` after this many minutes; `0` disables |
+| `METER_VALUE_SAMPLE_INTERVAL` | `30` | Initial `MeterValueSampleInterval` (s) |
+
+- AC: rated power with ±1% jitter.
+- DC: rated power with ±2% jitter for 10 min, then tapers 2% of rated per minute down to 60% of rated.
+- Power never exceeds rated. No energy accrues while `SuspendedEV` / `SuspendedEVSE`.
+- Each MeterValues carries `Energy.Active.Import.Register` (integer Wh) and `Power.Active.Import` (W), with `context` `Transaction.Begin`, `Sample.Periodic` or `Trigger`. No `SoC` is sent (the CSMS stops a session at SoC ≥ 100).
+- `StopTransaction.meterStop` is the register reading at stop (no synthetic top-up).
 
 Scenario **`configuration`**: `get-configuration`, `change-configuration`, `config-meter-realism`.
 

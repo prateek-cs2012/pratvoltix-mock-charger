@@ -1,6 +1,7 @@
 import { CONTROL_PATH } from "@pratvoltix/simulator-control";
 import { SimulatorControlClient } from "./control-client.js";
 import { FaultEngine } from "./fault-engine.js";
+import { parseChargerType, parseNonNegativeNumber, parsePositiveNumber } from "./meter-model.js";
 import { OcppSession } from "./ocpp-session.js";
 
 const identity = process.env.CHARGE_POINT_ID ?? "CP001";
@@ -16,6 +17,11 @@ const session = new OcppSession({
   bootstrapUrl,
   vendor: process.env.CHARGE_POINT_VENDOR,
   model: process.env.CHARGE_POINT_MODEL,
+  // PRAT-244 meter model: set these to the charger's type and ratedPowerKw on the CSMS.
+  chargerType: parseChargerType(process.env.CHARGER_TYPE),
+  ratedPowerKw: parsePositiveNumber(process.env.RATED_POWER_KW),
+  autoStopMinutes: parseNonNegativeNumber(process.env.AUTO_STOP_MINUTES),
+  meterValueSampleInterval: parseSampleInterval(process.env.METER_VALUE_SAMPLE_INTERVAL),
   faults,
   notify: (action, payload) => notifyControl(action, payload),
   log: (message) => console.log(message),
@@ -49,6 +55,11 @@ const control = new SimulatorControlClient({
   setConnectorStatus: (status, errorCode) => session.setConnectorStatus(status, errorCode),
 });
 notifyControl = (action, payload) => control.notify(action, payload);
+
+function parseSampleInterval(value: string | undefined): number | undefined {
+  const parsed = parseNonNegativeNumber(value);
+  return parsed !== undefined && Number.isInteger(parsed) ? parsed : undefined;
+}
 
 function shutdown(): void {
   control.stop();

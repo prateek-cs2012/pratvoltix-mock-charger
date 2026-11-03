@@ -76,7 +76,7 @@ export const configMeterRealismCase = defineTestCase<OcppTestContext>({
     available.reply({});
 
     // Restore defaults so later catalog cases are not polluted
-    await ctx.peer.call(Ocpp16Action.ChangeConfiguration, { key: "MeterValueSampleInterval", value: "10" }, callTimeoutMs);
+    await ctx.peer.call(Ocpp16Action.ChangeConfiguration, { key: "MeterValueSampleInterval", value: "30" }, callTimeoutMs);
     await ctx.peer.call(Ocpp16Action.ClearCache, {}, callTimeoutMs);
     ctx.log("Config/meter realism path complete");
   },

@@ -2,6 +2,7 @@ import { OcppConnection, transportFromWebSocket } from "@pratvoltix/ocpp";
 import { ControlProtocolError, sanitizeCsmsUrl, type ReconnectStormConfig } from "@pratvoltix/simulator-control";
 import WebSocket from "ws";
 import type { FaultEngine } from "./fault-engine.js";
+import type { ChargerType } from "./meter-model.js";
 import { MockChargePoint, type ChargePointState, type ConnectorStatus, type LocalAuthEntry, type OfflineTransaction } from "./mock-charge-point.js";
 
 const CONNECT_TIMEOUT_MS = 8_000;
@@ -23,6 +24,11 @@ export interface OcppSessionOptions {
   bootstrapUrl: string;
   vendor?: string;
   model?: string;
+  /** Meter model inputs (PRAT-244): match the charger's type and ratedPowerKw on the CSMS. */
+  chargerType?: ChargerType;
+  ratedPowerKw?: number;
+  autoStopMinutes?: number;
+  meterValueSampleInterval?: number;
   faults: FaultEngine;
   notify: (action: "ocpp-frame" | "ocpp-state", payload: unknown) => Promise<unknown>;
   openSocket?: (url: string) => OcppSocket;
@@ -331,6 +337,12 @@ export class OcppSession {
         vendor: this.options.vendor ?? "Pratvoltix",
         model: this.options.model ?? "Lab-One",
         initialState: this.persistedState,
+        ...(this.options.chargerType ? { chargerType: this.options.chargerType } : {}),
+        ...(this.options.ratedPowerKw !== undefined ? { ratedPowerKw: this.options.ratedPowerKw } : {}),
+        ...(this.options.autoStopMinutes !== undefined ? { autoStopMinutes: this.options.autoStopMinutes } : {}),
+        ...(this.options.meterValueSampleInterval !== undefined
+          ? { meterValueSampleInterval: this.options.meterValueSampleInterval }
+          : {}),
       },
       this.options.faults,
       {

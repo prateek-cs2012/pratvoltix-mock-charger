@@ -9,6 +9,12 @@ import {
 } from "@pratvoltix/ocpp";
 import type { FaultEffect } from "@pratvoltix/simulator-control";
 import type { FaultEngine } from "./fault-engine.js";
+import { MeterModel, type ChargerType } from "./meter-model.js";
+
+/** Default MeterValueSampleInterval in seconds (PRAT-244 AC4). */
+export const DEFAULT_METER_VALUE_SAMPLE_INTERVAL_S = 30;
+/** Default auto-stop after this many minutes of charging, with reason Local (PRAT-244 AC4). */
+export const DEFAULT_AUTO_STOP_MINUTES = 15;
 
 export type ConnectorStatus = "Available" | "Preparing" | "Charging" | "SuspendedEVSE" | "SuspendedEV" | "Finishing" | "Reserved" | "Unavailable" | "Faulted";
 
@@ -17,6 +23,8 @@ export interface ChargePointState {
   connectorStatus: ConnectorStatus;
   meterWh: number;
   idTag: string | null;
+  /** Epoch ms when the active transaction started; keeps the auto-stop deadline across reconnects. */
+  transactionStartedAt?: number | null;
 }
 
 export interface OfflineTransaction {
@@ -44,6 +52,16 @@ export interface MockChargePointOptions {
   firmwareVersion?: string;
   connectorId?: number;
   initialState?: ChargePointState;
+  /** "AC" (default) or "DC"; matches the charger's type on the CSMS. */
+  chargerType?: ChargerType;
+  /** Rated power in kW; matches the charger's ratedPowerKw on the CSMS. Defaults: AC 7.4, DC 60. */
+  ratedPowerKw?: number;
+  /** Stop the transaction with reason Local after this many minutes. Default 15; 0 disables. */
+  autoStopMinutes?: number;
+  /** Initial MeterValueSampleInterval in seconds. Default 30. */
+  meterValueSampleInterval?: number;
+  /** Random source for power jitter (tests inject a fixed one). */
+  random?: () => number;
 }
 
 interface ConfigurationKey {
@@ -59,14 +77,19 @@ export interface MockChargePointHooks {
 
 export class MockChargePoint {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  private meterWh: number;
+  private readonly meter: MeterModel;
   private transactionId: number | null;
   private connectorStatus: ConnectorStatus;
   private idTag: string | null;
   private heartbeatInterval = 60;
-  private meterValueSampleInterval = 10;
+  private meterValueSampleInterval: number;
   private authorizeRemoteTxRequests = true;
   private meterSampleTimer: ReturnType<typeof setInterval> | undefined;
+  private autoStopTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly autoStopMinutes: number;
+  private transactionStartedAt: number | null;
+  private lastMeterTickAt: number | null = null;
+  private stopInFlight: Promise<void> | null = null;
   private readonly connectorId: number;
 
   private lastStartTxKey: string | null = null;
@@ -94,8 +117,21 @@ export class MockChargePoint {
     const initialState = options.initialState;
     this.transactionId = initialState?.transactionId ?? null;
     this.connectorStatus = initialState?.connectorStatus ?? "Available";
-    this.meterWh = initialState?.meterWh ?? 1_000;
+    this.meter = new MeterModel(initialState?.meterWh ?? 1_000, {
+      ...(options.chargerType ? { chargerType: options.chargerType } : {}),
+      ...(options.ratedPowerKw !== undefined ? { ratedPowerKw: options.ratedPowerKw } : {}),
+      ...(options.random ? { random: options.random } : {}),
+    });
     this.idTag = initialState?.idTag ?? null;
+    this.transactionStartedAt = this.transactionId === null ? null : (initialState?.transactionStartedAt ?? null);
+    const sampleInterval = options.meterValueSampleInterval;
+    this.meterValueSampleInterval =
+      sampleInterval !== undefined && Number.isInteger(sampleInterval) && sampleInterval >= 0
+        ? sampleInterval
+        : DEFAULT_METER_VALUE_SAMPLE_INTERVAL_S;
+    const autoStop = options.autoStopMinutes;
+    this.autoStopMinutes =
+      autoStop !== undefined && Number.isFinite(autoStop) && autoStop >= 0 ? autoStop : DEFAULT_AUTO_STOP_MINUTES;
     this.connection.onCall((call) => this.handleCall(call));
   }
 
@@ -132,11 +168,22 @@ export class MockChargePoint {
   }
 
   getState(): ChargePointState {
+    this.accrueEnergy();
     return {
       transactionId: this.transactionId,
       connectorStatus: this.connectorStatus,
-      meterWh: this.meterWh,
+      meterWh: this.meter.registerWh,
       idTag: this.idTag,
+      transactionStartedAt: this.transactionStartedAt,
+    };
+  }
+
+  /** Charger type and rated power the meter model is using. */
+  getMeterProfile(): { chargerType: ChargerType; ratedPowerKw: number; autoStopMinutes: number } {
+    return {
+      chargerType: this.meter.chargerType,
+      ratedPowerKw: this.meter.ratedPowerKw,
+      autoStopMinutes: this.autoStopMinutes,
     };
   }
 
@@ -170,6 +217,11 @@ export class MockChargePoint {
 
   /** Lab cleanup: drop any active tx and mark Available without CSMS round-trips. */
   resetToIdle(): void {
+    this.stopMeterSampling();
+    this.clearAutoStop();
+    this.transactionStartedAt = null;
+    this.lastMeterTickAt = null;
+    this.meter.idle();
     this.transactionId = null;
     this.idTag = null;
     this.connectorStatus = "Available";
@@ -208,6 +260,8 @@ export class MockChargePoint {
 
   /** Force a StatusNotification (Suspended*, Faulted, …) without ending the tx. */
   async setConnectorStatus(status: ConnectorStatus, errorCode = "NoError"): Promise<void> {
+    // Close the current interval at the old status, so Suspended* periods add no energy.
+    this.accrueEnergy();
     this.connectorStatus = status;
     await this.connection.call(Ocpp16Action.StatusNotification, {
       ...this.statusPayload(status),
@@ -229,6 +283,7 @@ export class MockChargePoint {
     this.scheduleHeartbeat();
 
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload(this.connectorStatus));
+    this.resumeRestoredTransaction();
   }
 
   async emit(action: string): Promise<void> {
@@ -240,7 +295,9 @@ export class MockChargePoint {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+    this.accrueEnergy();
     this.stopMeterSampling();
+    this.clearAutoStop();
   }
 
   private async handleCall(call: InboundCall): Promise<Record<string, unknown>> {
@@ -364,7 +421,7 @@ export class MockChargePoint {
     await this.connection.call(Ocpp16Action.MeterValues, {
       connectorId: this.connectorId,
       ...(this.transactionId === null ? {} : { transactionId: this.transactionId }),
-      meterValue: [this.sample()],
+      meterValue: [this.sample("Trigger")],
     });
   }
 
@@ -390,6 +447,13 @@ export class MockChargePoint {
       await delay(this.outboundDelayMs);
     }
 
+    // AC1: the connector goes Preparing (cable in, waiting) before Authorize/StartTransaction.
+    // localStart has already sent it.
+    if (this.transactionId === null && this.connectorStatus !== "Preparing") {
+      this.connectorStatus = "Preparing";
+      await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Preparing"));
+    }
+
     let authStatus: string | undefined;
     if (!this.authorizeRemoteTxRequests) {
       authStatus = "Accepted";
@@ -407,6 +471,10 @@ export class MockChargePoint {
     }
 
     if (authStatus !== "Accepted") {
+      if (this.transactionId === null && this.connectorStatus === "Preparing") {
+        this.connectorStatus = "Available";
+        await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Available"));
+      }
       return;
     }
 
@@ -414,7 +482,7 @@ export class MockChargePoint {
       await delay(this.outboundDelayMs);
     }
 
-    const meterStart = this.meterWh;
+    const meterStart = this.meter.registerWh;
     const timestamp = new Date().toISOString();
     const startKey = `${connectorId}:${idTag}:${meterStart}`;
 
@@ -422,7 +490,7 @@ export class MockChargePoint {
       this.transactionId = this.lastStartTxResponse.transactionId;
       this.idTag = idTag;
       this.connectorStatus = "Charging";
-      this.scheduleMeterSampling();
+      this.startMetering(Date.now());
       return;
     }
 
@@ -445,13 +513,17 @@ export class MockChargePoint {
     this.transactionId = started.transactionId;
     this.idTag = idTag;
     this.connectorStatus = "Charging";
+    this.startMetering(Date.now());
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Charging"));
+    if (this.transactionId === null) {
+      // Stopped (e.g. RemoteStop) while Charging was in flight.
+      return;
+    }
     await this.connection.call(Ocpp16Action.MeterValues, {
       connectorId,
       transactionId: this.transactionId,
-      meterValue: [this.sample()],
+      meterValue: [this.sample("Transaction.Begin")],
     });
-    this.scheduleMeterSampling();
   }
 
   private remoteStop(call: InboundCall): Record<string, unknown> {
@@ -467,16 +539,39 @@ export class MockChargePoint {
     return { status: "Accepted" };
   }
 
-  private async finishTransaction(reason = "Remote"): Promise<void> {
+  /**
+   * Stop the active transaction once. A RemoteStop (including the CSMS HOLD_LIMIT stop)
+   * and the auto-stop timer can race; the second caller joins the first stop.
+   */
+  private finishTransaction(reason = "Remote"): Promise<void> {
+    if (this.stopInFlight) {
+      return this.stopInFlight;
+    }
+    const run = this.runFinishTransaction(reason).finally(() => {
+      if (this.stopInFlight === run) {
+        this.stopInFlight = null;
+      }
+    });
+    this.stopInFlight = run;
+    return run;
+  }
+
+  private async runFinishTransaction(reason: string): Promise<void> {
     const transactionId = this.transactionId;
     if (transactionId === null) {
       return;
     }
+    // Bill energy up to the moment of stop, then freeze the meter.
+    this.accrueEnergy();
     this.stopMeterSampling();
+    this.clearAutoStop();
+    this.lastMeterTickAt = null;
+    this.meter.idle();
 
     if (this.lastStopTxId === transactionId && this.lastStopTxResponse) {
       this.transactionId = null;
       this.idTag = null;
+      this.transactionStartedAt = null;
       this.connectorStatus = "Available";
       return;
     }
@@ -484,8 +579,8 @@ export class MockChargePoint {
     this.connectorStatus = "Finishing";
     await this.connection.call(Ocpp16Action.StatusNotification, this.statusPayload("Finishing"));
 
-    this.meterWh += 250;
-    const meterStop = this.meterWh;
+    // AC3: meterStop is the register itself (no synthetic top-up).
+    const meterStop = this.meter.registerWh;
     const timestamp = new Date().toISOString();
 
     const response = await this.connection.call<Record<string, unknown>>(Ocpp16Action.StopTransaction, {
@@ -500,6 +595,7 @@ export class MockChargePoint {
 
     this.transactionId = null;
     this.idTag = null;
+    this.transactionStartedAt = null;
     if (this.availabilityScheduled) {
       this.availabilityScheduled = false;
       this.connectorStatus = "Unavailable";
@@ -805,6 +901,7 @@ export class MockChargePoint {
       }
       this.meterValueSampleInterval = interval;
       if (this.transactionId !== null) {
+        this.accrueEnergy();
         this.scheduleMeterSampling();
       }
       return { status: "Accepted" };
@@ -849,12 +946,11 @@ export class MockChargePoint {
         this.stopMeterSampling();
         return;
       }
-      this.meterWh += 50;
       void this.connection
         .call(Ocpp16Action.MeterValues, {
           connectorId: this.connectorId,
           transactionId: this.transactionId,
-          meterValue: [this.sample()],
+          meterValue: [this.sample("Sample.Periodic")],
         })
         .catch(() => undefined);
     }, this.meterValueSampleInterval * 1000);
@@ -864,6 +960,72 @@ export class MockChargePoint {
     if (this.meterSampleTimer) {
       clearInterval(this.meterSampleTimer);
       this.meterSampleTimer = undefined;
+    }
+  }
+
+  /** Begin energy integration, periodic MeterValues and the auto-stop timer for a new or resumed tx. */
+  private startMetering(now: number, resumed = false): void {
+    if (!resumed || this.transactionStartedAt === null) {
+      this.transactionStartedAt = now;
+    }
+    this.lastMeterTickAt = now;
+    if (this.connectorStatus === "Charging") {
+      this.meter.begin();
+    }
+    this.scheduleMeterSampling();
+    this.scheduleAutoStop(now);
+  }
+
+  /** After a reconnect, keep metering a transaction restored from persisted state. */
+  private resumeRestoredTransaction(): void {
+    if (this.transactionId === null || this.meterSampleTimer || this.stopInFlight) {
+      return;
+    }
+    if (this.connectorStatus !== "Charging" && this.connectorStatus !== "SuspendedEV" && this.connectorStatus !== "SuspendedEVSE") {
+      return;
+    }
+    this.startMetering(Date.now(), true);
+  }
+
+  /** Integrate energy (kW × dt) since the last tick, if the connector is delivering power. */
+  private accrueEnergy(now = Date.now()): void {
+    if (this.transactionId === null || this.lastMeterTickAt === null) {
+      return;
+    }
+    const dtMs = now - this.lastMeterTickAt;
+    this.lastMeterTickAt = now;
+    if (this.connectorStatus !== "Charging") {
+      this.meter.idle();
+      return;
+    }
+    const startedAt = this.transactionStartedAt ?? now;
+    this.meter.advance(dtMs, now - startedAt);
+  }
+
+  /** AC4: stop with reason Local once the session reaches autoStopMinutes. */
+  private scheduleAutoStop(now: number): void {
+    this.clearAutoStop();
+    if (this.autoStopMinutes <= 0 || this.transactionId === null) {
+      return;
+    }
+    const startedAt = this.transactionStartedAt ?? now;
+    const remainingMs = Math.max(0, startedAt + this.autoStopMinutes * 60_000 - now);
+    const transactionId = this.transactionId;
+    this.autoStopTimer = setTimeout(() => {
+      this.autoStopTimer = undefined;
+      if (this.transactionId !== transactionId) {
+        return;
+      }
+      void this.finishTransaction("Local").catch((error: unknown) => {
+        console.error("Auto-stop failed", error);
+      });
+    }, remainingMs);
+  }
+
+  private clearAutoStop(): void {
+    if (this.autoStopTimer) {
+      clearTimeout(this.autoStopTimer);
+      this.autoStopTimer = undefined;
     }
   }
 
@@ -889,14 +1051,27 @@ export class MockChargePoint {
     };
   }
 
-  private sample(): Record<string, unknown> {
+  /**
+   * AC2: Energy.Active.Import.Register (integer Wh) and Power.Active.Import (W).
+   * No SoC: the CSMS stops a session on SoC >= 100.
+   */
+  private sample(context: "Transaction.Begin" | "Sample.Periodic" | "Trigger"): Record<string, unknown> {
+    this.accrueEnergy();
+    const charging = this.transactionId !== null && this.connectorStatus === "Charging";
     return {
       timestamp: new Date().toISOString(),
       sampledValue: [
         {
-          value: String(this.meterWh),
+          value: String(this.meter.registerWh),
+          context,
           measurand: "Energy.Active.Import.Register",
           unit: "Wh",
+        },
+        {
+          value: String(charging ? this.meter.powerW : 0),
+          context,
+          measurand: "Power.Active.Import",
+          unit: "W",
         },
       ],
     };
